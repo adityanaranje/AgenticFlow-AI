@@ -1,0 +1,51 @@
+[project]
+name = "agentflow-ai"
+version = "0.1.0"
+description = "Enterprise Multi-Agent Research and Knowledge Intelligence Platform"
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic>=2",
+    "pydantic-settings",
+    "python-dotenv",
+
+    "openai",
+"redis[hiredis]",
+    "langchain-redis",
+    
+    "langchain",
+    "langchain-openai",
+    "langgraph",
+
+    "qdrant-client",
+
+    "supabase",
+
+    "langfuse",
+
+    "fastmcp",
+
+    "pypdf",
+    "python-docx",
+    "python-multipart",
+
+    "httpx"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff"
+]
+
+[tool.pytest.ini_options]
+pythonpath = [
+    "."
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

@@ -1,0 +1,32 @@
+# Environment
+.env
+.env.local
+.env.production
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Evaluation output
+evaluation/results/*.json
+evaluation/results/*.csv
+
+# Upload temp
+tmp/
+uploads/
