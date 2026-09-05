@@ -1,36 +1,47 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api.health import router as health_router
-from backend.app.core.config import settings
+from app.api.health import router as health_router
+from app.core.config import settings
+from app.core.langfuse import flush_langfuse
+from app.core.logging import configure_logging
+
+@asynccontextmanager
+async def lifespan(_:FastAPI):
+    """Applicatino lifecycle."""
+
+    configure_logging()
+
+    yield
+
+    flush_langfuse()
 
 app = FastAPI(
-    title = settings.app_name,
+    title=settings.app_name,
+    version = "0.1.0",
     description=(
-        "Enterprise Multi-Agent Research"
-        "and Knowledge Intelligence Platform"
+        "Production-oriented multi-agent AI research "
+        "and knowledge intelligence platform."
     ),
-    version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        settings.frontend_url,
-    ],
+    allow_origins=[settings.frontend_url],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=[""],
 )
 
 app.include_router(health_router)
 
-
-@app.get('/')
-def root():
+@app.get("/")
+def root() -> dict[str, str]:
+    """Basic API information."""
     return {
-        "name" : settings.app_name,
-        "environment": settings.environment,
-        "docs":"/docs",
-        "health":"/health",
+        "name": settings.app_name,
+        "status":"running",
+        "version":"0.1.0",
     }

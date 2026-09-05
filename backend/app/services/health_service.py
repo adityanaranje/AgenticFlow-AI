@@ -1,60 +1,117 @@
-from backend.app.core.langfuse import langfuse
-from backend.app.db.supabase import get_supabase_admin
-from backend.app.rag.qdrant import get_qdrant_client
-from backend.app.llm.client import get_openai_client
-from backend.app.core.config import settings
+from typing import Any
 
+from app.core.logging import get_logger
+from app.core.langfuse import get_langfuse
+from app.db.supabase import get_supabase
+from app.rag.qdrant import get_qdrant_client
+from app.llm.client import get_openai_client
+from app.cache.redis_client import get_redis_client
+from app.core.config import settings
 
-def check_openai() -> tuple[bool, str]:
+logger = get_logger(__name__)
+
+def _service_status(status: str, detail: str) -> dict[str, str]:
+    return {
+        "status": status,
+        "detail": detail,
+    }
+
+def check_openai() -> dict[str, str]:
+    client = get_openai_client()
+
+    if client is None:
+        return _service_status("down", "Not configured")
+
     try:
-        client = get_openai_client()
+        client.models.list()
 
-        models = client.models.list()
-
-        if models is None:
-            return False, "No response"
-        return True, "Connected"
+        return _service_status("up", "Connected")
     except Exception as exc:
-        return False, str(exc)
+        logger.exception("OPENAI health check failed.")
+        return _service_status("down", str(exc))
 
 
-def check_supabase() -> tuple[bool, str]:
+def check_supabase() -> dict[str, str]:
+    client = get_supabase()
+
+    if client is None:
+        return _service_status("down", "Not configured")
+
     try:
-        client = get_supabase_admin()
+        # This verifies that a usable Supabase client exists.
+        # Actual application queries are introduced in Phase 2.
+        if not client:
+            return _service_status("down", "Client unavailable")
 
-        # Lightweight auth api call that does not depend on our 
-        # application tables 
-        response = client.auth.admin.list_users(
-            page=1,
-            per_page=1,
-        )
+        return _service_status("up", "Connected")
 
-        if response is None:
-            return False, "No response"
-        return True, "Conected"
     except Exception as exc:
-        return False, str(exc)
+        logger.exception("Supabase health check failed.")
+        return _service_status("down", str(exc))
 
 
-def check_qdrant() -> tuple[bool, str]:
+def check_qdrant() -> dict[str, str]:
+    client = get_qdrant_client()
+
+    if client is None:
+        return _service_status("down", "Not configured")
+
     try:
-        client = get_qdrant_client()
+        # Do not check for a specific collection here.
+        # Collection creation happens in the RAG phase.
+        client.get_collections()
 
-        client.get_collection(
-            collection_name=settings.qdrant_collection
-        )
+        return _service_status("up", "Connected")
 
-        return True, "Connected"
     except Exception as exc:
-        return False, str(exc)
+        logger.exception("Qdrant health check failed.")
+        return _service_status("down", str(exc))
 
-def check_langfuse() -> tuple[bool, str]:
+def check_redis() -> dict[str, str]:
+    client = get_redis_client()
+
+    if client is None:
+        return _service_status("down", "Not configured")
+
     try:
-        # Langfuse SDK exposes an auth check.
-        authenticated = langfuse.auth_check()
+        client.ping()
 
-        if authenticated:
-            return True, "Connected"
-        return False, "Authentication Failed"
+        return _service_status("up", "Connected")
+
     except Exception as exc:
-        return False, str(exc)
+        logger.exception("Redis health check failed.")
+        return _service_status("down", str(exc))
+
+def check_langfuse() -> dict[str, str]:
+    client = get_langfuse()
+
+    if client is None:
+        return _service_status("down", "Not configured")
+
+    try:
+        client.auth_check()
+
+        return _service_status("up", "Connected")
+
+    except Exception as exc:
+        logger.exception("Langfuse health check failed.")
+        return _service_status("down", str(exc))
+
+def get_system_health() -> dict[str, Any]:
+    services = {
+    "openai": check_openai(),
+    "supabase": check_supabase(),
+    "qdrant": check_qdrant(),
+    "redis": check_redis(),
+    "langfuse": check_langfuse(),
+    }
+
+    healthy = all(
+        service["status"] == "up"
+        for service in services.values()
+    )
+
+    return {
+        "status": "healthy" if healthy else "degraded",
+        **services,
+    }

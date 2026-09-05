@@ -1,32 +1,89 @@
-# Environment
-.env
-.env.local
-.env.production
-
+```gitignore
+# ============================================================
 # Python
-.venv/
+# ============================================================
+
 __pycache__/
 *.py[cod]
+*$py.class
+
 .pytest_cache/
+.mypy_cache/
 .ruff_cache/
 
-# Next.js
-frontend/node_modules/
-frontend/.next/
-frontend/.env.local
+.venv/
+venv/
+env/
 
+*.egg-info/
+dist/
+build/
+
+
+# ============================================================
+# Environment
+# ============================================================
+
+.env
+.env.*
+!.env.example
+
+# Frontend environment
+frontend/.env.local
+frontend/.env.local.*
+
+
+# ============================================================
 # IDE
+# ============================================================
+
 .vscode/
 .idea/
 
+*.swp
+*.swo
+
+
+# ============================================================
 # OS
+# ============================================================
+
 .DS_Store
 Thumbs.db
 
-# Evaluation output
-evaluation/results/*.json
-evaluation/results/*.csv
 
-# Upload temp
+# ============================================================
+# Logs
+# ============================================================
+
+*.log
+logs/
+
+
+# ============================================================
+# Evaluation output
+# ============================================================
+
+evaluation/results/*
+
+# Keep directory
+!evaluation/results/.gitkeep
+
+
+# ============================================================
+# Next.js
+# ============================================================
+
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+
+
+# ============================================================
+# Temporary files
+# ============================================================
+
 tmp/
-uploads/
+temp/
+*.tmp
+```

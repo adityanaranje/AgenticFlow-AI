@@ -16,3 +16,4 @@ httpx
 pytest 
 pytest-asyncio
 fastmcp
+redis
