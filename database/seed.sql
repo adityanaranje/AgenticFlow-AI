@@ -1,0 +1,12 @@
+-- ============================================================
+-- AgentFlow AI
+-- Development seed
+-- ============================================================
+
+-- Intentionally no fake users or organizations are inserted.
+--
+-- Supabase Auth users should be created through Supabase Auth.
+-- Organizations should be created through the application.
+--
+-- This file is intentionally safe to execute against a
+-- development database.
