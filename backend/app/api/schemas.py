@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 
+
 class ServiceHealth(BaseModel):
     status: str
     detail: str | None = None
@@ -10,4 +11,5 @@ class HealthResponse(BaseModel):
     openai: ServiceHealth
     supabase: ServiceHealth
     qdrant: ServiceHealth
+    redis: ServiceHealth
     langfuse: ServiceHealth

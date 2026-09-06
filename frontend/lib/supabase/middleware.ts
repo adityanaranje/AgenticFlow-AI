@@ -1,25 +1,14 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { type NextRequest, NextResponse } from "next/server";
 
-import { NextResponse } from "next/server";
-import { NextRequest } from "next/server";
+import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/env";
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({
     request,
   });
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
-  }
-
-  if (!supabaseAnonKey) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_ANON_KEY");
-  }
-
-  const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+  const supabase = createServerClient(getSupabaseUrl(), getSupabaseAnonKey(), {
     cookies: {
       getAll() {
         return request.cookies.getAll();
@@ -32,8 +21,8 @@ export async function updateSession(request: NextRequest) {
           options: CookieOptions;
         }[],
       ) {
-        cookiesToSet.forEach(({ name, value, options, }) => {
-          request.cookies.set(name, value,);
+        cookiesToSet.forEach(({ name, value }) => {
+          request.cookies.set(name, value);
         });
 
         response = NextResponse.next({
@@ -64,6 +53,7 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/research") ||
     pathname.startsWith("/reports") ||
     pathname.startsWith("/settings");
+
   if (!user && isProtectedRoute) {
     const url = request.nextUrl.clone();
 

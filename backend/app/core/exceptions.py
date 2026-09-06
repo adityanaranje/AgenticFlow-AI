@@ -13,4 +13,4 @@ class AuthorizationError(AgentFlowError):
     """Raised when a user is not authorized."""
 
 class ValidationError(AgentFlowError):
-    """Raised when application data fials validation."""
+    """Raised when application data fails validation."""

@@ -1,6 +1,6 @@
 "use client";
 
-import { type SubmitEvent, useState } from "react";
+import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/client";
@@ -8,88 +8,56 @@ import { createClient } from "@/lib/supabase/client";
 export default function SignupPage() {
   const router = useRouter();
 
-  const [fullName, setFullName] =
-    useState("");
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const [email, setEmail] =
-    useState("");
-
-  const [password, setPassword] =
-    useState("");
-
-  const [confirmPassword, setConfirmPassword] =
-    useState("");
-
-  const [error, setError] =
-    useState<string | null>(null);
-
-  const [message, setMessage] =
-    useState<string | null>(null);
-
-  const [loading, setLoading] =
-    useState(false);
-
-  async function handleSignup(
-    event: SubmitEvent<HTMLFormElement>,
-  ) {
+  async function handleSignup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     setError(null);
     setMessage(null);
 
     if (password !== confirmPassword) {
-      setError(
-        "Passwords do not match.",
-      );
-
+      setError("Passwords do not match.");
       return;
     }
 
     if (password.length < 8) {
-      setError(
-        "Password must be at least 8 characters.",
-      );
-
+      setError("Password must be at least 8 characters.");
       return;
     }
 
     setLoading(true);
 
-    const supabase =
-      createClient();
+    const supabase = createClient();
 
-    const origin =
-      window.location.origin;
+    const origin = window.location.origin;
 
-    const {
-      data,
-      error: signupError,
-    } =
-      await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            full_name: fullName,
-          },
-          emailRedirectTo:
-            `${origin}/auth/callback`,
+    const { data, error: signupError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          full_name: fullName,
         },
-      });
+        emailRedirectTo: `${origin}/auth/callback`,
+      },
+    });
 
     if (signupError) {
-      setError(
-        signupError.message,
-      );
-
+      setError(signupError.message);
       setLoading(false);
       return;
     }
 
     /*
-     * Depending on Supabase email-confirmation
-     * settings, session may be immediately
-     * available or may require confirmation.
+     * Depending on Supabase email-confirmation settings, the session
+     * may be immediately available or may require confirmation.
      */
     if (data.session) {
       router.replace("/dashboard");
@@ -100,7 +68,6 @@ export default function SignupPage() {
     setMessage(
       "Account created. Check your email to confirm your account.",
     );
-
     setLoading(false);
   }
 
@@ -120,10 +87,7 @@ export default function SignupPage() {
         }}
       >
         <h1>Create account</h1>
-
-        <p>
-          Create your AgentFlow AI account.
-        </p>
+        <p>Create your AgentFlow AI account.</p>
 
         <form
           onSubmit={handleSignup}
@@ -138,11 +102,7 @@ export default function SignupPage() {
             <input
               type="text"
               value={fullName}
-              onChange={(event) =>
-                setFullName(
-                  event.target.value,
-                )
-              }
+              onChange={(event) => setFullName(event.target.value)}
               required
               autoComplete="name"
               style={{
@@ -159,11 +119,7 @@ export default function SignupPage() {
             <input
               type="email"
               value={email}
-              onChange={(event) =>
-                setEmail(
-                  event.target.value,
-                )
-              }
+              onChange={(event) => setEmail(event.target.value)}
               required
               autoComplete="email"
               style={{
@@ -180,11 +136,7 @@ export default function SignupPage() {
             <input
               type="password"
               value={password}
-              onChange={(event) =>
-                setPassword(
-                  event.target.value,
-                )
-              }
+              onChange={(event) => setPassword(event.target.value)}
               required
               autoComplete="new-password"
               style={{
@@ -201,11 +153,7 @@ export default function SignupPage() {
             <input
               type="password"
               value={confirmPassword}
-              onChange={(event) =>
-                setConfirmPassword(
-                  event.target.value,
-                )
-              }
+              onChange={(event) => setConfirmPassword(event.target.value)}
               required
               autoComplete="new-password"
               style={{
@@ -239,25 +187,13 @@ export default function SignupPage() {
             </p>
           )}
 
-          <button
-            type="submit"
-            disabled={loading}
-          >
-            {loading
-              ? "Creating account..."
-              : "Create account"}
+          <button type="submit" disabled={loading}>
+            {loading ? "Creating account…" : "Create account"}
           </button>
         </form>
 
-        <p
-          style={{
-            marginTop: "20px",
-          }}
-        >
-          Already have an account?{" "}
-          <a href="/login">
-            Sign in
-          </a>
+        <p style={{ marginTop: "20px" }}>
+          Already have an account? <a href="/login">Sign in</a>
         </p>
       </div>
     </main>
