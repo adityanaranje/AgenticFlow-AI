@@ -42,10 +42,14 @@ export async function updateSession(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
 
-  const isAuthRoute =
-    pathname.startsWith("/login") ||
-    pathname.startsWith("/signup") ||
-    pathname.startsWith("/auth");
+  /*
+   * Only the auth *pages* should bounce signed-in users away.
+   * Do NOT include "/auth/*" here: those are functional endpoints
+   * (/auth/logout must run to clear the session, /auth/callback
+   * must exchange the PKCE code) and redirecting them would break
+   * sign-out and email-link confirmation.
+   */
+  const isAuthPage = pathname === "/login" || pathname === "/signup";
 
   const isProtectedRoute =
     pathname.startsWith("/dashboard") ||
@@ -63,7 +67,7 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  if (user && isAuthRoute) {
+  if (user && isAuthPage) {
     const url = request.nextUrl.clone();
 
     url.pathname = "/dashboard";
