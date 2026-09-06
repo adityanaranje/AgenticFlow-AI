@@ -1,12 +1,22 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
-import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/env";
+import { getSupabasePublicEnv } from "@/lib/env";
 
 export async function createClient() {
   const cookieStore = await cookies();
 
-  return createServerClient(getSupabaseUrl(), getSupabaseAnonKey(), {
+  const env = getSupabasePublicEnv();
+
+  if (!env) {
+    throw new Error(
+      "Supabase is not configured: set NEXT_PUBLIC_SUPABASE_URL and " +
+        "NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env (or .env.local) — " +
+        "see frontend/.env.example — then restart the dev server.",
+    );
+  }
+
+  return createServerClient(env.url, env.anonKey, {
     cookies: {
       getAll() {
         return cookieStore.getAll();

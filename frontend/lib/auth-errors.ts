@@ -20,9 +20,9 @@ export function describeAuthError(error: unknown): string {
 
   if (/Missing NEXT_PUBLIC_/.test(message)) {
     return (
-      "Sign-in isn\u2019t configured yet. Copy frontend/.env.example to " +
-      "frontend/.env.local and set NEXT_PUBLIC_SUPABASE_URL and " +
-      "NEXT_PUBLIC_SUPABASE_ANON_KEY, then restart the dev server."
+      "Sign-in isn\u2019t configured yet. Add NEXT_PUBLIC_SUPABASE_URL and " +
+      "NEXT_PUBLIC_SUPABASE_ANON_KEY to frontend/.env (or .env.local — see " +
+      "frontend/.env.example), then fully restart the dev server."
     );
   }
 

@@ -1,14 +1,31 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 
-import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/env";
+import { getSupabasePublicEnv } from "@/lib/env";
 
 export async function updateSession(request: NextRequest) {
+  const env = getSupabasePublicEnv();
+
+  /*
+   * Supabase not configured (missing/blank NEXT_PUBLIC_SUPABASE_URL or
+   * NEXT_PUBLIC_SUPABASE_ANON_KEY): fail open instead of crashing every
+   * request. Public pages keep working and the auth pages explain what
+   * to configure when the user tries to sign in.
+   */
+  if (!env) {
+    console.warn(
+      "[supabase] NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY are " +
+        "not set. Skipping session checks. Add them to frontend/.env and " +
+        "restart the dev server.",
+    );
+    return NextResponse.next();
+  }
+
   let response = NextResponse.next({
     request,
   });
 
-  const supabase = createServerClient(getSupabaseUrl(), getSupabaseAnonKey(), {
+  const supabase = createServerClient(env.url, env.anonKey, {
     cookies: {
       getAll() {
         return request.cookies.getAll();

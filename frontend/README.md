@@ -16,7 +16,7 @@ Requirements: Node.js 20+ and npm 10+.
 
 ```bash
 # 1. Configure environment (see .env.example)
-cp .env.example .env.local
+cp .env.example .env   # .env.local also works
 #    -> set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
 #       NEXT_PUBLIC_API_URL (defaults to http://localhost:8000)
 

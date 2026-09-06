@@ -39,7 +39,21 @@ export async function GET(request: Request) {
     );
   }
 
-  const supabase = await createClient();
+  const supabase = await createClient().catch(() => null);
+
+  if (!supabase) {
+    // Supabase not configured (missing env): nothing to exchange.
+    return NextResponse.redirect(
+      new URL(
+        `/login?error=missing_config&message=${encodeURIComponent(
+          "Supabase is not configured. Add NEXT_PUBLIC_SUPABASE_URL and " +
+            "NEXT_PUBLIC_SUPABASE_ANON_KEY to frontend/.env and restart " +
+            "the dev server.",
+        )}`,
+        request.url,
+      ),
+    );
+  }
 
   const { error } = await supabase.auth.exchangeCodeForSession(code);
 

@@ -15,11 +15,20 @@ import {
 } from "lucide-react";
 
 import Logo from "@/components/brand/Logo";
+import { getSupabasePublicEnv } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
   title: "Dashboard",
 };
+
+/*
+ * The dashboard renders the signed-in user's session, so it must be
+ * rendered per-request (never statically prerendered). force-dynamic
+ * also keeps the missing-env guard below from confusing Next's
+ * dynamic-usage detection during builds.
+ */
+export const dynamic = "force-dynamic";
 
 const roleStyles: Record<string, string> = {
   owner: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
@@ -59,6 +68,16 @@ const comingSoon = [
 ];
 
 export default async function DashboardPage() {
+  // Supabase env missing → redirect before rendering starts; the auth
+  // pages explain how to configure the app when signing in is attempted.
+  if (!getSupabasePublicEnv()) {
+    console.warn(
+      "[dashboard] Supabase is not configured (NEXT_PUBLIC_SUPABASE_URL / " +
+        "NEXT_PUBLIC_SUPABASE_ANON_KEY). Redirecting to /login.",
+    );
+    redirect("/login");
+  }
+
   const supabase = await createClient();
 
   const {

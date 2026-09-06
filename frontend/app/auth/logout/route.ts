@@ -1,7 +1,7 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 
-import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/env";
+import { getSupabasePublicEnv } from "@/lib/env";
 
 /**
  * Sign-out endpoint (POST /auth/logout).
@@ -15,32 +15,36 @@ import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/env";
 export async function POST(request: NextRequest) {
   const response = NextResponse.redirect(new URL("/login", request.url));
 
-  const supabase = createServerClient(getSupabaseUrl(), getSupabaseAnonKey(), {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
-      },
+  const env = getSupabasePublicEnv();
 
-      setAll(
-        cookiesToSet: {
-          name: string;
-          value: string;
-          options: CookieOptions;
-        }[],
-      ) {
-        cookiesToSet.forEach(({ name, value, options }) => {
-          response.cookies.set(name, value, options);
-        });
-      },
-    },
-  });
+  if (env) {
+    const supabase = createServerClient(env.url, env.anonKey, {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
 
-  try {
-    await supabase.auth.signOut();
-  } catch {
-    // Fall through: the session cookies are still expired below, so
-    // the user is signed out locally even if the revocation call
-    // fails (e.g. network error).
+        setAll(
+          cookiesToSet: {
+            name: string;
+            value: string;
+            options: CookieOptions;
+          }[],
+        ) {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            response.cookies.set(name, value, options);
+          });
+        },
+      },
+    });
+
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // Fall through: the session cookies are still expired below, so
+      // the user is signed out locally even if the revocation call
+      // fails (e.g. network error).
+    }
   }
 
   // Defensive: expire any remaining Supabase session cookies

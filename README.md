@@ -99,7 +99,7 @@ cd agentflow-ai
 cp backend/.env.example backend/.env         # fill in real values
 
 # Frontend environment
-cp frontend/.env.example frontend/.env.local # fill in real values
+cp frontend/.env.example frontend/.env      # fill in real values (.env.local also works)
 
 # (Optional) docker-compose environment
 cp .env.example .env
