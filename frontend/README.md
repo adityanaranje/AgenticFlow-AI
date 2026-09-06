@@ -54,6 +54,15 @@ public/         # Static assets
   `QDRANT_API_KEY`, `OPENAI_API_KEY`) must never appear in frontend
   code or with a `NEXT_PUBLIC_` prefix.
 
+## Authentication
+
+Supabase Auth handles sign-in with email + password **and Google OAuth**
+(Sign in with Google on `/login` and `/signup`). The OAuth callback is
+`/auth/callback` (PKCE code exchange). Google must be enabled as a
+provider in the Supabase project dashboard; add
+`http://localhost:3000/auth/callback` (plus your deployed origin) to the
+provider's authorized redirect URLs.
+
 ## Docker
 
 See `../infrastructure/docker/README.md` and the root

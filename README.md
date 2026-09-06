@@ -177,9 +177,13 @@ cd frontend
 npm run dev
 ```
 
-Open http://localhost:3000. Supabase sign-up / sign-in is wired
-(password flow + PKCE callback); the dashboard reads the user profile and
-organizations seeded by `database/migrations`.
+Open http://localhost:3000. Sign-up / sign-in is handled by Supabase Auth:
+email + password, or **Google OAuth** (Sign in with Google). To enable
+Google, add the provider in your Supabase dashboard
+(Authentication → Providers → Google) with the authorized redirect URL
+`https://<your-app>/auth/callback` (in the Supabase dashboard for
+`http://localhost:3000/auth/callback`). The dashboard reads the user
+profile and organizations seeded by `database/migrations`.
 
 ## 7. Docker usage
 
