@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowRight, CircleAlert, Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
 
 import GoogleButton from "@/components/auth/GoogleButton";
+import { describeAuthError } from "@/lib/auth-errors";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginForm({ initialError }: { initialError?: string | null }) {
@@ -25,15 +26,22 @@ export default function LoginForm({ initialError }: { initialError?: string | nu
     setError(null);
     setLoading(true);
 
-    const supabase = createClient();
+    try {
+      const supabase = createClient();
 
-    const { error: loginError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+      const { error: loginError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
-    if (loginError) {
-      setError(loginError.message);
+      if (loginError) {
+        setError(loginError.message);
+        setLoading(false);
+        return;
+      }
+    } catch (err) {
+      console.error("Sign-in failed:", err);
+      setError(describeAuthError(err));
       setLoading(false);
       return;
     }

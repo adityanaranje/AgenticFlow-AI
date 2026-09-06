@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 
 import GoogleButton from "@/components/auth/GoogleButton";
+import { describeAuthError } from "@/lib/auth-errors";
 import { createClient } from "@/lib/supabase/client";
 
 export default function SignupForm() {
@@ -47,34 +48,41 @@ export default function SignupForm() {
 
     setLoading(true);
 
-    const supabase = createClient();
+    try {
+      const supabase = createClient();
 
-    const origin = window.location.origin;
+      const origin = window.location.origin;
 
-    const { data, error: signupError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: fullName,
+      const { data, error: signupError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: fullName,
+          },
+          emailRedirectTo: `${origin}/auth/callback`,
         },
-        emailRedirectTo: `${origin}/auth/callback`,
-      },
-    });
+      });
 
-    if (signupError) {
-      setError(signupError.message);
+      if (signupError) {
+        setError(signupError.message);
+        setLoading(false);
+        return;
+      }
+
+      /*
+       * Depending on Supabase email-confirmation settings, the session
+       * may be immediately available or may require confirmation.
+       */
+      if (data.session) {
+        router.replace("/dashboard");
+        router.refresh();
+        return;
+      }
+    } catch (err) {
+      console.error("Sign-up failed:", err);
+      setError(describeAuthError(err));
       setLoading(false);
-      return;
-    }
-
-    /*
-     * Depending on Supabase email-confirmation settings, the session
-     * may be immediately available or may require confirmation.
-     */
-    if (data.session) {
-      router.replace("/dashboard");
-      router.refresh();
       return;
     }
 

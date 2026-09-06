@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2 } from "lucide-react";
+import { CircleAlert, Loader2 } from "lucide-react";
 
 import GoogleIcon from "@/components/auth/GoogleIcon";
+import { describeAuthError, describeOAuthError } from "@/lib/auth-errors";
 import { createClient } from "@/lib/supabase/client";
 
 /**
@@ -13,8 +14,10 @@ import { createClient } from "@/lib/supabase/client";
  * consent, back to `/auth/callback` where the PKCE code is exchanged
  * (the code verifier is persisted in cookies by createBrowserClient).
  *
- * Requires the Google provider to be enabled in the Supabase
- * project dashboard (Authentication -> Providers -> Google).
+ * Failures are inspected and explained precisely (missing env config,
+ * blocked cookies, unreachable Supabase, provider disabled) instead of
+ * showing a generic message. The technical error is always logged to
+ * the console as well.
  */
 export default function GoogleButton({ label }: { label?: string }) {
   const [loading, setLoading] = useState(false);
@@ -37,12 +40,19 @@ export default function GoogleButton({ label }: { label?: string }) {
       });
 
       if (signInError) {
-        setError(signInError.message);
+        // Provider disabled, invalid project, etc. — returned, not thrown.
+        console.error("Google sign-in error:", signInError);
+        setError(describeOAuthError(signInError.message) ?? signInError.message);
         setLoading(false);
+        return;
       }
+
       // On success the browser is navigated to Google — nothing to do.
-    } catch {
-      setError("Google sign-in could not be started. Please try again.");
+    } catch (err) {
+      // Thrown failures: missing env config, blocked cookie writes,
+      // network errors to Supabase, ...
+      console.error("Google sign-in failed:", err);
+      setError(describeAuthError(err));
       setLoading(false);
     }
   }
@@ -66,9 +76,10 @@ export default function GoogleButton({ label }: { label?: string }) {
       {error && (
         <p
           role="alert"
-          className="mt-2 text-center text-xs font-medium text-rose-600 dark:text-rose-400"
+          className="mt-2 flex items-start gap-1.5 text-left text-xs leading-relaxed text-rose-600 dark:text-rose-400"
         >
-          {error}
+          <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span>{error}</span>
         </p>
       )}
     </div>
