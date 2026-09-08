@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 
+import { safeRedirect } from "@/lib/safe-redirect";
 import { createClient } from "@/lib/supabase/server";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
 
   const code = searchParams.get("code");
-  const redirectTo = searchParams.get("redirect") || "/dashboard";
+  // Only ever redirect to a safe internal path (never an external URL).
+  const redirectTo = safeRedirect(searchParams.get("redirect"));
 
   /*
    * OAuth providers (Google) redirect back here with `code` on
@@ -67,7 +69,5 @@ export async function GET(request: Request) {
     );
   }
 
-  return NextResponse.redirect(
-    new URL(redirectTo.startsWith("/") ? redirectTo : "/dashboard", request.url),
-  );
+  return NextResponse.redirect(new URL(redirectTo, request.url));
 }

@@ -15,6 +15,9 @@ import {
 } from "lucide-react";
 
 import Logo from "@/components/brand/Logo";
+import OrganizationSwitcher from "@/components/organizations/OrganizationSwitcher";
+import { getUserOrganizations } from "@/lib/organizations/server";
+import type { OrganizationRole } from "@/lib/organizations/types";
 import { getSupabasePublicEnv } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
 
@@ -33,7 +36,8 @@ export const dynamic = "force-dynamic";
 const roleStyles: Record<string, string> = {
   owner: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
   admin: "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300",
-  analyst: "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
+  researcher:
+    "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
   viewer: "bg-zinc-100 text-zinc-600 dark:bg-zinc-500/15 dark:text-zinc-300",
 };
 
@@ -94,34 +98,17 @@ export default async function DashboardPage() {
     .eq("id", user.id)
     .maybeSingle();
 
-  const { data: memberships } = await supabase
-    .from("organization_members")
-    .select(
-      `
-        organization_id,
-        role,
-        created_at,
-        organizations (
-          id,
-          name,
-          slug,
-          created_at
-        )
-      `,
-    )
-    .eq("user_id", user.id);
+  // Resolve the user's organizations + roles against their authenticated
+  // memberships (never trusts a client-supplied organization id).
+  const myOrganizations = await getUserOrganizations();
 
   const displayName = profile?.full_name?.trim() || user.email?.split("@")[0] || "there";
   const initial = displayName.charAt(0).toUpperCase();
-  const organizations = (memberships ?? [])
-    .map((membership) => {
-      const organization = Array.isArray(membership.organizations)
-        ? membership.organizations[0]
-        : membership.organizations;
-
-      return organization ? { ...membership, organization } : null;
-    })
-    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  const organizations = myOrganizations.map(({ membership, organization }) => ({
+    organization,
+    role: membership.role as OrganizationRole,
+    created_at: membership.created_at,
+  }));
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -133,6 +120,11 @@ export default async function DashboardPage() {
           </Link>
 
           <div className="flex items-center gap-3">
+            <OrganizationSwitcher
+              organizations={organizations}
+              currentOrganizationId={organizations[0]?.organization.id}
+            />
+
             <span className="hidden items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 sm:inline-flex dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
               <span className="flex h-6 w-6 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 text-[10px] font-bold text-white">
                 {initial}
@@ -220,25 +212,25 @@ export default async function DashboardPage() {
                 You are not part of any organization yet
               </h3>
               <p className="mt-1.5 max-w-sm text-sm text-zinc-500 dark:text-zinc-400">
-                Organizations let your team share a knowledge base. Creating and
-                joining organizations arrives in the next phase.
+                Organizations let your team share a knowledge base of documents,
+                research and reports. Create your first organization to get
+                started.
               </p>
-              <button
-                type="button"
-                disabled
-                title="Available in the next phase"
-                className="btn-primary mt-6 px-5 opacity-70"
+              <Link
+                href="/organizations/new"
+                className="btn-primary mt-6 px-5"
               >
                 <FolderOpen className="h-4 w-4" aria-hidden="true" />
-                Create organization — soon
-              </button>
+                Create your first organization
+              </Link>
             </div>
           ) : (
             <div className="grid gap-5 sm:grid-cols-2">
               {organizations.map(({ organization, role, created_at }, index) => (
-                <article
+                <Link
                   key={organization.id}
-                  className="card animate-fade-up p-6 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-zinc-900/5 dark:hover:shadow-black/30"
+                  href={`/organizations/${organization.id}`}
+                  className="card animate-fade-up block p-6 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-zinc-900/5 dark:hover:shadow-black/30"
                   style={{ animationDelay: `${120 + index * 80}ms` }}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -266,7 +258,7 @@ export default async function DashboardPage() {
                     <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
                     Member since {formatMemberSince(created_at) || "recently"}
                   </div>
-                </article>
+                </Link>
               ))}
             </div>
           )}

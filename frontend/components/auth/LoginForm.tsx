@@ -10,6 +10,7 @@ import OAuthSetupPanel from "@/components/auth/OAuthSetupPanel";
 import type { OAuthRedirectPlan } from "@/lib/auth-setup";
 import { describeAuthError } from "@/lib/auth-errors";
 import { getSupabaseEnvStatus } from "@/lib/env";
+import { safeRedirect } from "@/lib/safe-redirect";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginForm({
@@ -62,7 +63,7 @@ export default function LoginForm({
       return;
     }
 
-    router.replace(redirect.startsWith("/") ? redirect : "/dashboard");
+    router.replace(safeRedirect(redirect));
     router.refresh();
   }
 
