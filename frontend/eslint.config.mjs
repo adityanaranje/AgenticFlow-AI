@@ -19,6 +19,26 @@ const eslintConfig = defineConfig([
        * NEXT_PUBLIC_SUPABASE_URL" in the browser. Read the literal once and
        * snapshot it (see the PUBLIC_ENV map in lib/env.ts).
        */
+      /*
+       * Same idea for React's own event aliases: `FormEvent` and
+       * `FormEventHandler` are marked @deprecated in @types/react 19 ("FormEvent
+       * doesn't actually exist") — a submit handler takes `SubmitEvent<T>`, an
+       * input handler `ChangeEvent<T>` / `InputEvent<T>`. Pick the one matching
+       * the event instead of the catch-all alias.
+       */
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "react",
+              importNames: ["FormEvent", "FormEventHandler"],
+              message:
+                "FormEvent/FormEventHandler are deprecated in @types/react 19. Use SubmitEvent<T> for onSubmit, ChangeEvent<T> / InputEvent<T> for inputs, or SyntheticEvent<T> as the general type.",
+            },
+          ],
+        },
+      ],
       "no-restricted-syntax": [
         "error",
         {

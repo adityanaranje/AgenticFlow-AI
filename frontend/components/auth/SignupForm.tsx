@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState, type SubmitEvent } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowRight,
@@ -35,7 +35,7 @@ export default function SignupForm() {
   // Unusable configuration is shown as a setup checklist, not an error.
   const { configured } = getSupabaseEnvStatus();
 
-  async function handleSignup(event: FormEvent<HTMLFormElement>) {
+  async function handleSignup(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!configured) return;

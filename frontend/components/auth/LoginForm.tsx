@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState, type SubmitEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowRight, CircleAlert, Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
 
@@ -25,7 +25,7 @@ export default function LoginForm({ initialError }: { initialError?: string | nu
   // Unusable configuration is shown as a setup checklist, not an error.
   const { configured } = getSupabaseEnvStatus();
 
-  async function handleLogin(event: FormEvent<HTMLFormElement>) {
+  async function handleLogin(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!configured) return;
