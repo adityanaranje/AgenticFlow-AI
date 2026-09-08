@@ -5,6 +5,7 @@ import { CircleAlert, Loader2 } from "lucide-react";
 
 import GoogleIcon from "@/components/auth/GoogleIcon";
 import { describeAuthError, describeOAuthError } from "@/lib/auth-errors";
+import { getSupabaseEnvStatus } from "@/lib/env";
 import { createClient } from "@/lib/supabase/client";
 
 /**
@@ -23,7 +24,16 @@ export default function GoogleButton({ label }: { label?: string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /*
+   * When the public Supabase env is unusable the button is inert on
+   * purpose: AuthConfigNotice already says what to fix, and a click
+   * would only throw.
+   */
+  const { configured } = getSupabaseEnvStatus();
+
   async function handleGoogleSignIn() {
+    if (!configured) return;
+
     setError(null);
     setLoading(true);
 
@@ -62,7 +72,12 @@ export default function GoogleButton({ label }: { label?: string }) {
       <button
         type="button"
         onClick={handleGoogleSignIn}
-        disabled={loading}
+        disabled={loading || !configured}
+        title={
+          configured
+            ? undefined
+            : "Unavailable until NEXT_PUBLIC_SUPABASE_URL and the publishable/anon key are set and the dev server is restarted"
+        }
         className="btn-secondary w-full"
       >
         {loading ? (

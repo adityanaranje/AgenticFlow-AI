@@ -16,14 +16,43 @@ Requirements: Node.js 20+ and npm 10+.
 
 ```bash
 # 1. Configure environment (see .env.example)
-cp .env.example .env   # .env.local also works
-#    -> set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
-#       NEXT_PUBLIC_API_URL (defaults to http://localhost:8000)
+cp .env.example .env.local     # .env works too; only this folder is read
 
-# 2. Install and run
+#    -> NEXT_PUBLIC_SUPABASE_URL
+#    -> NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, or the legacy
+#       NEXT_PUBLIC_SUPABASE_ANON_KEY (Supabase dashboard -> Project
+#       Settings -> API Keys; the *publishable* key is the browser-safe one)
+#    -> NEXT_PUBLIC_API_URL (defaults to http://localhost:8000)
+
+# 2. Install, check the values, and run
 npm install
-npm run dev          # http://localhost:3000
+npm run doctor         # what Next.js will actually load, explained
+npm run dev            # http://localhost:3000
 ```
+
+> `NEXT_PUBLIC_*` values are inlined into the browser bundle when the dev
+> server starts, so every edit needs a restart (Turbopack prints
+> `Reload env: .env.local` when it picks the change up) or a rebuild for
+> `npm run build && npm run start`.
+
+## Sign-in does nothing / “Missing NEXT_PUBLIC_SUPABASE_URL”
+
+That is a build-configuration problem, not an account problem. The login and
+sign-up pages render a checklist naming the exact variable and mistake, and the
+dev server prints the same box in the terminal. `npm run doctor` covers the
+whole family of causes:
+
+| Finding                                                        | Fix |
+| -------------------------------------------------------------- | --- |
+| No `.env*` file in `frontend/`                                  | `npm run doctor -- --copy`, fill in the values, restart |
+| Values live in the **repository root** `.env`                   | Only docker-compose reads it; move them to `frontend/.env.local` |
+| Variable declared but empty in `.env.local`                     | A blank line beats a good value in `.env` — delete the blank line |
+| Value set in your shell (e.g. `""`)                             | `unset VAR` / `Remove-Item Env:VAR`, then restart from a fresh terminal |
+| `.env.local` written by PowerShell `>` (UTF-16)                 | Save as “UTF-8 without BOM”; Next.js reads nothing from UTF-16 |
+| Quotes, placeholder text, trailing `/`, missing `https://`      | Write `NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co` |
+| `sb_secret_...` or a `service_role` JWT in a `NEXT_PUBLIC_*` var | Replace with the publishable key and rotate the secret — it bypasses RLS |
+| Key’s `iss` points at another project ref                       | Take URL and key from the same project |
+| Reachability: Supabase answers `400/401`, or the host has no DNS record | Live check runs by default (`--offline` to skip); it also catches paused projects |
 
 ## Scripts
 
@@ -49,7 +78,8 @@ public/         # Static assets
 
 - All backend HTTP calls go through `lib/api/client.ts` — never scatter
   `fetch` calls through the app.
-- All `NEXT_PUBLIC_*` reads go through `lib/env.ts`.
+- All `NEXT_PUBLIC_*` reads go through `lib/env.ts` (validation lives in
+  `lib/supabase-env.ts`, shared with the auth pages and `npm run doctor`).
 - Secrets (`SUPABASE_SERVICE_ROLE_KEY`, `LANGFUSE_SECRET_KEY`,
   `QDRANT_API_KEY`, `OPENAI_API_KEY`) must never appear in frontend
   code or with a `NEXT_PUBLIC_` prefix.

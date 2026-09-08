@@ -13,10 +13,15 @@ export async function updateSession(request: NextRequest) {
    * to configure when the user tries to sign in.
    */
   if (!env) {
+    // No cookies to refresh, so no redirect decisions can be made:
+    // public pages keep working and the auth pages show the setup
+    // checklist (components/auth/AuthConfigNotice).
     console.warn(
-      "[supabase] NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY are " +
-        "not set. Skipping session checks. Add them to frontend/.env and " +
-        "restart the dev server.",
+      "[supabase] NEXT_PUBLIC_SUPABASE_URL and the publishable/anon key are " +
+        "not loaded, so session checks are skipped. Put them in " +
+        "frontend/.env.local (not the repository root .env), then restart " +
+        "the dev server - `npm run doctor` in frontend/ explains what Next.js " +
+        "is seeing.",
     );
     return NextResponse.next();
   }

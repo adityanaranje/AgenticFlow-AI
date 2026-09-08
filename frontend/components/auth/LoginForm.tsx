@@ -4,8 +4,10 @@ import { useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowRight, CircleAlert, Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
 
+import AuthConfigNotice from "@/components/auth/AuthConfigNotice";
 import GoogleButton from "@/components/auth/GoogleButton";
 import { describeAuthError } from "@/lib/auth-errors";
+import { getSupabaseEnvStatus } from "@/lib/env";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginForm({ initialError }: { initialError?: string | null }) {
@@ -20,8 +22,13 @@ export default function LoginForm({ initialError }: { initialError?: string | nu
   const [error, setError] = useState<string | null>(initialError ?? null);
   const [loading, setLoading] = useState(false);
 
+  // Unusable configuration is shown as a setup checklist, not an error.
+  const { configured } = getSupabaseEnvStatus();
+
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (!configured) return;
 
     setError(null);
     setLoading(true);
@@ -52,6 +59,8 @@ export default function LoginForm({ initialError }: { initialError?: string | nu
 
   return (
     <div className="space-y-6">
+      {!configured && <AuthConfigNotice />}
+
       <GoogleButton />
 
       {/* Divider */}
@@ -130,7 +139,11 @@ export default function LoginForm({ initialError }: { initialError?: string | nu
           </div>
         )}
 
-        <button type="submit" disabled={loading} className="btn-primary btn-block">
+        <button
+          type="submit"
+          disabled={loading || !configured}
+          className="btn-primary btn-block"
+        >
           {loading ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />

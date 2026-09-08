@@ -98,11 +98,17 @@ cd agentflow-ai
 # Backend environment
 cp backend/.env.example backend/.env         # fill in real values
 
-# Frontend environment
-cp frontend/.env.example frontend/.env      # fill in real values (.env.local also works)
+# Frontend environment  (NEXT_PUBLIC_SUPABASE_URL + the publishable key,
+# or the legacy anon key). `npm run dev` only reads frontend/.env*, never this
+# root file - and it inlines NEXT_PUBLIC_* values at start-up, so restart it
+# after every edit.
+cp frontend/.env.example frontend/.env.local
 
 # (Optional) docker-compose environment
 cp .env.example .env
+
+# Validate what the frontend will actually load
+(cd frontend && npm run doctor)             # add -- --copy to create the file
 ```
 
 ### 4.2 Backend
@@ -146,14 +152,17 @@ npm install
 | `LANGFUSE_PUBLIC_KEY`             | backend    |    🔒    | Backend-only                              |
 | `LANGFUSE_SECRET_KEY`             | backend    |    🔒    | **Never expose to the browser**           |
 | `NEXT_PUBLIC_SUPABASE_URL`        | frontend   |    ✅    | Inlined into the browser bundle           |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY`   | frontend   |    ✅    | Public anon key                           |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | frontend |   ✅    | Publishable key (`sb_publishable_...`) - preferred |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY`   | frontend   |    ✅    | Legacy anon key; used when the publishable one is unset |
 | `NEXT_PUBLIC_API_URL`             | frontend   |          | Backend base URL (default `http://localhost:8000`) |
 
 **Security rules (enforced by design):** secrets are never hard-coded; the
 service-role key, Langfuse secret and Qdrant key exist only server-side and
 must never be given a `NEXT_PUBLIC_` prefix or referenced by frontend code.
 `backend/.env.example` and `frontend/.env.example` document exactly this
-split.
+split. Supabase renamed "anon" to "publishable" (and "service_role" to
+"secret", `sb_secret_...`); both frontend variable names are accepted and the
+legacy keys still work while enabled, but new projects only get the new ones.
 
 ## 6. Local development
 
@@ -185,6 +194,39 @@ Google, add the provider in your Supabase dashboard
 `http://localhost:3000/auth/callback`). The dashboard reads the user
 profile and organizations seeded by `database/migrations`.
 
+```bash
+cd frontend && npm run doctor
+```
+
+Checks what Next.js will actually load — which `.env*` file each value comes
+from, placeholders/quotes/UTF-16 files, an empty shell variable shadowing your
+file, secret keys in browser variables, keys belonging to another project, and
+(live) whether Supabase accepts the URL + key pair.
+
+### Troubleshooting: “Missing NEXT_PUBLIC_SUPABASE_URL”
+
+Sign-in is compiled into the browser bundle, so this family of errors is about
+the *build*, not the account. In order of likelihood:
+
+1. **Wrong file.** Values must be in `frontend/.env.local` (or
+   `frontend/.env`). The repository root `.env` is only read by
+   docker-compose.
+2. **No restart.** `NEXT_PUBLIC_*` values are read when the dev server starts.
+   Restart it (`Ctrl+C`, `npm run dev`); you should see
+   `Reload env: .env.local` in the terminal. A production image needs a
+   rebuild — see `frontend/Dockerfile` build args.
+3. **Empty value in your shell.** `NEXT_PUBLIC_SUPABASE_URL=""` exported in the
+   terminal wins over every file (Next.js stops at the first definition).
+4. **Blank / placeholder line** left over from copying `.env.example`, or a
+   value quoted, truncated, or with a path appended.
+5. **Secret key in the frontend.** `sb_secret_...` / a `service_role` JWT in a
+   `NEXT_PUBLIC_*` variable is rejected on purpose — it would be shipped to
+   every browser. Use the publishable key.
+
+The login and sign-up pages show the exact problem and the fix instead of a
+generic failure, the dev server prints the same in your terminal, and
+`npm run doctor` explains all five cases with commands.
+
 ## 7. Docker usage
 
 ```bash
@@ -196,6 +238,13 @@ docker compose up --build
 | frontend   | `agentflow-frontend` | http://localhost:3000          |
 | backend    | `agentflow-backend`  | http://localhost:8000/health   |
 | redis      | `agentflow-redis`    | redis://localhost:6379/0       |
+
+The frontend image bakes `NEXT_PUBLIC_*` values into the browser bundle at
+**build** time, so `docker compose build` fails with a `BUILD ERROR:` line when
+`NEXT_PUBLIC_SUPABASE_URL` / the publishable key are missing from the root
+`.env` (a green build with a broken sign-in is worse). Pass
+`--build-arg REQUIRE_SUPABASE_ENV=0` for a build that intentionally carries no
+credentials.
 
 Supabase, Qdrant and Langfuse remain external — point the stack at your
 hosted instances through the root `.env` file (see `.env.example`).

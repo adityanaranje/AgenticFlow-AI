@@ -4,7 +4,7 @@
  * Supabase auth can fail in several very different ways and they all
  * used to surface as one generic "could not be started" text:
  *
- *  1. Environment not configured  -> createClient() throws "Missing NEXT_PUBLIC_..."
+ *  1. Environment not configured  -> requireSupabaseEnv() throws a config error
  *  2. Browser blocking cookies    -> PKCE verifier cookie write throws (SecurityError)
  *  3. Network / wrong project URL -> fetch to Supabase fails
  *  4. Google provider not enabled -> signInWithOAuth returns a provider error
@@ -18,11 +18,15 @@ export function describeAuthError(error: unknown): string {
 
   const message = error.message ?? String(error);
 
-  if (/Missing NEXT_PUBLIC_/.test(message)) {
+  if (/not configured for this build|Missing NEXT_PUBLIC_|is not configured/.test(message)) {
+    // The full diagnosis (which variable, which mistake, which command) is on
+    // the page above the form and in the dev-server terminal — don't repeat
+    // a wall of text inside a red alert box.
     return (
-      "Sign-in isn\u2019t configured yet. Add NEXT_PUBLIC_SUPABASE_URL and " +
-      "NEXT_PUBLIC_SUPABASE_ANON_KEY to frontend/.env (or .env.local — see " +
-      "frontend/.env.example), then fully restart the dev server."
+      "Sign-in isn\u2019t configured in this build. The setup checklist above " +
+      "says which variable is missing or invalid \u2014 run \u201cnpm run " +
+      "doctor\u201d in frontend/ to verify the values, then restart the dev " +
+      "server."
     );
   }
 
@@ -36,16 +40,19 @@ export function describeAuthError(error: unknown): string {
 
   if (/failed to fetch|network|load failed|ERR_|fetch/i.test(message)) {
     return (
-      "Could not reach the Supabase server. Check your internet connection " +
-      "and that NEXT_PUBLIC_SUPABASE_URL points at your project URL."
+      "Could not reach the Supabase server. Check your internet connection, " +
+      "whether the project is paused in the dashboard, and that " +
+      "NEXT_PUBLIC_SUPABASE_URL is your project URL (\u201cnpm run doctor\u201d " +
+      "tests exactly this)."
     );
   }
 
   if (/provider/i.test(message)) {
     return (
       "The Google provider isn\u2019t enabled for this Supabase project. " +
-      "Enable it in the Supabase dashboard (Authentication \u2192 Providers \u2192 " +
-      "Google) and add your /auth/callback URL to the allowed redirect URLs."
+      "Enable it in the Supabase dashboard (Authentication \u2192 Sign In / " +
+      "Providers \u2192 Google) and add http://localhost:3000/auth/callback " +
+      "(plus your deployed origin) to the allowed redirect URLs."
     );
   }
 
