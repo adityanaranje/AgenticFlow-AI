@@ -87,11 +87,27 @@ public/         # Static assets
 ## Authentication
 
 Supabase Auth handles sign-in with email + password **and Google OAuth**
-(Sign in with Google on `/login` and `/signup`). The OAuth callback is
-`/auth/callback` (PKCE code exchange). Google must be enabled as a
-provider in the Supabase project dashboard; add
-`http://localhost:3000/auth/callback` (plus your deployed origin) to the
-provider's authorized redirect URLs.
+(Sign in with Google on `/login` and `/signup`). `GoogleButton` calls
+`signInWithOAuth` with `redirectTo = <origin>/auth/callback`; the app's
+`/auth/callback` route then does the PKCE code exchange, so the session
+lands in cookies written by `@supabase/ssr`.
+
+Two redirect lists, and they are not interchangeable:
+
+- **Google Cloud → Clients → Authorized redirect URIs** takes *Supabase's*
+  callback — `https://<project-ref>.supabase.co/auth/callback` (the value is
+  printed on the Supabase Google provider page). Google never sees this app.
+- **Supabase → Authentication → URL Configuration → Redirect URLs** takes
+  *this app's* `redirectTo` — `http://localhost:3000/auth/callback` or
+  `http://localhost:3000/**` in development, plus the deployed origin.
+  *Authorized JavaScript origins* in Google Cloud gets the bare origins.
+
+Swap those two and Google answers “Access blocked: This app's request is
+invalid (`redirect_uri_mismatch`)”. To check the live wiring, run
+`npm run doctor` — it asks GoTrue `/auth/v1/authorize?provider=google` and
+prints the `redirect_uri` your project actually sends, or reports that the
+provider is disabled. In development the same values are pre-filled on the
+login and sign-up pages under “Google sign-in setup — exact URLs to paste”.
 
 ## Docker
 

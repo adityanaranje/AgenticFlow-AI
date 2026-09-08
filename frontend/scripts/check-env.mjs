@@ -6,6 +6,8 @@
  *   npm run doctor -- --offline skip the live Supabase reachability check
  *   npm run doctor -- --copy    create frontend/.env.local from the example
  *   npm run doctor -- --mode=production   validate for `next build` instead
+ *   npm run doctor -- --app-url=https://app.example.com   origin used for the
+ *                                         Google/Supabase redirect-URL checks
  *
  * Why this exists: `NEXT_PUBLIC_*` values are baked into the browser bundle
  * when the dev server STARTS, from the .env files inside `frontend/`. That
@@ -25,6 +27,8 @@
  */
 
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +44,7 @@ const flags = new Set(argv.filter((a) => a.startsWith("--")).map((a) => a.split(
 const modeFromArg = argv.find((a) => a.startsWith("--mode="))?.split("=")[1];
 const MODE = modeFromArg ?? (process.env.NODE_ENV === "test" ? "test" : "development");
 const OFFLINE = flags.has("--offline");
+const APP_URL = argv.find((a) => a.startsWith("--app-url="))?.split("=").slice(1).join("=");
 const COPY = flags.has("--copy");
 
 const C = process.stdout.hasColors?.("stdout") === false ? noColor() : color();
@@ -503,6 +508,134 @@ async function liveCheck(urlInfo, key) {
   }
 }
 
+/**
+ * Ask GoTrue itself what it sends to Google.
+ *
+ * GET /auth/v1/authorize?provider=google answers with a 302 whose Location is
+ * the URL the browser will be pushed to — including the `redirect_uri` Google
+ * is told to return to. That single value is what must appear in Google Cloud's
+ * "Authorized redirect URIs", so printing it ends the usual hour of guessing.
+ * Redirects are NOT followed: the Location header is the whole point.
+ */
+function fetchNoRedirect(target) {
+  return new Promise((resolve, reject) => {
+    const lib = target.protocol === "http:" ? http : https;
+
+    const req = lib.get(
+      target,
+      {
+        headers: { accept: "application/json,text/html;q=0.9" },
+        timeout: 12000,
+      },
+      (res) => {
+        let body = "";
+
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          if (body.length < 4000) body += chunk;
+        });
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            location: res.headers.location ?? null,
+            body,
+          }),
+        );
+      },
+    );
+
+    req.on("timeout", () => req.destroy(new Error("timed out after 12s")));
+    req.on("error", reject);
+  });
+}
+
+async function checkGoogleProvider(urlInfo) {
+  if (!urlInfo) return;
+
+  if (OFFLINE) {
+    info("Google provider probe skipped (--offline)");
+    return;
+  }
+
+  const appOrigin = (APP_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+  const target = new URL(`${urlInfo.url}/auth/v1/authorize`);
+
+  target.searchParams.set("provider", "google");
+  target.searchParams.set("redirect_to", `${appOrigin}/auth/callback`);
+
+  let result;
+
+  try {
+    result = await fetchNoRedirect(target);
+  } catch (cause) {
+    warn(
+      "Could not ask Supabase what it sends to Google",
+      `GET ${target.toString()}`,
+      `cause: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    return;
+  }
+
+  const { status, location, body } = result;
+
+  if (status >= 300 && status < 400 && location) {
+    let providerRedirectUri = null;
+    let providerHost = null;
+
+    try {
+      const providerUrl = new URL(location);
+
+      providerHost = providerUrl.hostname;
+      providerRedirectUri = providerUrl.searchParams.get("redirect_uri");
+    } catch {
+      /* unparsable Location — report it verbatim below */
+    }
+
+    if (providerHost === "accounts.google.com") {
+      if (!providerRedirectUri) {
+        warn("Supabase redirected to Google without a redirect_uri", `Location: ${location}`);
+        return;
+      }
+
+      findings.googleNote =
+        `Google provider is ENABLED. Supabase sends redirect_uri=${providerRedirectUri} — ` +
+        `that exact string (and only that one) belongs in Google Cloud → Clients → Authorized redirect URIs. ` +
+        `Put ${appOrigin} in "Authorized JavaScript origins" instead, and ${appOrigin}/auth/callback ` +
+        `in Supabase → Authentication → URL Configuration → Redirect URLs.`;
+      return;
+    }
+
+    info(
+      `Supabase redirected the provider request to ${providerHost ?? location}`,
+      "Expected accounts.google.com for the Google provider.",
+    );
+    return;
+  }
+
+  const looksDisabled =
+    /provider.*not.*found|not enabled|unsupported provider|external provider.*disabled|bad_request.*provider/i.test(
+      body,
+    ) || status === 400 || status === 422;
+
+  if (looksDisabled) {
+    const excerpt = body.trim().slice(0, 200);
+
+    error(
+      "Supabase did not hand the request to Google (provider disabled, or the request was refused)",
+      `GET ${target.pathname}${target.search} → HTTP ${status}`,
+      excerpt ? `response: ${excerpt}` : "no response body",
+      "Enable the provider in Supabase → Authentication → Sign In / Providers → Google and paste the Client ID and Client Secret from Google Cloud → Auth Platform → Clients.",
+    );
+    return;
+  }
+
+  warn(
+    `Unexpected answer from the Supabase authorize endpoint (HTTP ${status})`,
+    location ? `Location: ${location}` : body.trim().slice(0, 200),
+    `Requested: ${target.toString()}`,
+  );
+}
+
 function printSection(title, items, marker, colorFn) {
   if (items.length === 0) return;
 
@@ -581,6 +714,7 @@ async function main() {
 
   checkKeyMatchesProject(urlInfo, key);
   await liveCheck(urlInfo, key);
+  await checkGoogleProvider(urlInfo);
 
   const apiUrl = resolveValue(API_URL_VAR, files);
   if (!apiUrl) {
@@ -593,6 +727,7 @@ async function main() {
 
   if (findings.checkedOk) console.log(`\n  ${C.green("✔")} ${findings.checkedOk}`);
   if (findings.checkedWarn) console.log(`\n  ${C.yellow("▲")} ${findings.checkedWarn}`);
+  if (findings.googleNote) console.log(`\n  ${C.cyan("◆ Google / OAuth wiring")}\n      ${C.dim(findings.googleNote)}`);
 
   if (findings.errors.length === 0 && findings.warnings.length === 0) {
     console.log(

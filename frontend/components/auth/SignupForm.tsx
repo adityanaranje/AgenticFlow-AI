@@ -16,11 +16,17 @@ import {
 
 import AuthConfigNotice from "@/components/auth/AuthConfigNotice";
 import GoogleButton from "@/components/auth/GoogleButton";
+import OAuthSetupPanel from "@/components/auth/OAuthSetupPanel";
+import type { OAuthRedirectPlan } from "@/lib/auth-setup";
 import { describeAuthError } from "@/lib/auth-errors";
 import { getSupabaseEnvStatus } from "@/lib/env";
 import { createClient } from "@/lib/supabase/client";
 
-export default function SignupForm() {
+export default function SignupForm({
+  oauthPlan = null,
+}: {
+  oauthPlan?: OAuthRedirectPlan | null;
+}) {
   const router = useRouter();
 
   const [fullName, setFullName] = useState("");
@@ -102,6 +108,8 @@ export default function SignupForm() {
       {!configured && <AuthConfigNotice />}
 
       <GoogleButton label="Sign up with Google" />
+
+      {configured && <OAuthSetupPanel plan={oauthPlan} />}
 
       {/* Divider */}
       <div className="flex items-center gap-3" aria-hidden="true">

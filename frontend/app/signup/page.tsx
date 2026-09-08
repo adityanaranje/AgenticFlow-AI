@@ -2,13 +2,17 @@ import type { Metadata } from "next";
 
 import AuthShell from "@/components/auth/AuthShell";
 import SignupForm from "@/components/auth/SignupForm";
+import { getOAuthRedirectPlan } from "@/lib/auth-setup.server";
 
 export const metadata: Metadata = {
   title: "Create account",
   description: "Create your AgentFlow AI account.",
 };
 
-export default function SignupPage() {
+export default async function SignupPage() {
+  // Dev-only: the exact URLs Google and Supabase must be told about.
+  const oauthPlan = await getOAuthRedirectPlan();
+
   return (
     <AuthShell
       title="Create your account"
@@ -25,7 +29,7 @@ export default function SignupPage() {
         </>
       }
     >
-      <SignupForm />
+      <SignupForm oauthPlan={oauthPlan} />
     </AuthShell>
   );
 }

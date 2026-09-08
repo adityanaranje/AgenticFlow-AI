@@ -187,12 +187,45 @@ npm run dev
 ```
 
 Open http://localhost:3000. Sign-up / sign-in is handled by Supabase Auth:
-email + password, or **Google OAuth** (Sign in with Google). To enable
-Google, add the provider in your Supabase dashboard
-(Authentication → Providers → Google) with the authorized redirect URL
-`https://<your-app>/auth/callback` (in the Supabase dashboard for
-`http://localhost:3000/auth/callback`). The dashboard reads the user
-profile and organizations seeded by `database/migrations`.
+email + password, or **Google OAuth** (Sign in with Google). The dashboard
+reads the user profile and organizations seeded by `database/migrations`.
+
+### Google OAuth: which URL goes where
+
+Three lists have to agree, and putting the *app* URL in the *provider* list is
+what produces Google's `Access blocked: This app's request is invalid`
+(`redirect_uri_mismatch`). During the provider hop Google only ever talks to
+your **Supabase project**, never to `localhost:3000`:
+
+| Where | Value |
+| ----- | ----- |
+| Google Cloud → Auth Platform → Clients → your **Web application** client → *Authorized redirect URIs* | the Supabase project callback shown on the Google provider page — `https://<project-ref>.supabase.co/auth/callback` |
+| Google Cloud → same client → *Authorized JavaScript origins* | `http://localhost:3000`, your deployed origin, and any preview origin |
+| Supabase → Authentication → URL Configuration → *Site URL* | `http://localhost:3000` (dev) / the production origin |
+| Supabase → Authentication → URL Configuration → *Redirect URLs* | `http://localhost:3000/auth/callback` (or `http://localhost:3000/**` in dev) plus the deployed equivalent |
+| Supabase → Authentication → Sign In / Providers → Google | Client ID + Client Secret, provider enabled; scopes `openid`, `email`, `profile` |
+
+`components/auth/GoogleButton.tsx` sends `redirectTo = <app origin>/auth/callback`
+(PKCE) and `app/auth/callback/route.ts` exchanges the code — both must stay in
+Supabase's *Redirect URLs* list, never in Google's.
+
+Then verify without a browser:
+
+```bash
+cd frontend && npm run doctor     # probes /auth/v1/authorize and prints the exact
+                                  # redirect_uri Supabase sends to Google
+```
+
+The dev login page also lists every value above, pre-filled from your
+configured project URL and the request's own origin, under
+“Google sign-in setup — exact URLs to paste”.
+
+Notes: Google takes ~1 minute to propagate client changes; keep the OAuth
+client's *Audience* set so your account can sign in (an unverified app in
+“Testing” mode only lets approved test users); use the same host you visit
+(`localhost` vs `127.0.0.1` are different origins — register both). Running a
+local `supabase start` stack instead of the hosted one? Register
+`http://127.0.0.1:54321/auth/v1/callback` with Google.
 
 ```bash
 cd frontend && npm run doctor

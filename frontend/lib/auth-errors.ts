@@ -1,3 +1,5 @@
+import { isRedirectUriMismatch } from "@/lib/auth-setup";
+
 /**
  * Translate auth-flow failures into precise, actionable messages.
  *
@@ -63,6 +65,26 @@ export function describeAuthError(error: unknown): string {
 /** Map an AuthApiError returned (not thrown) by signInWithOAuth. */
 export function describeOAuthError(message: string | null): string | null {
   if (!message) return null;
+
+  if (isRedirectUriMismatch(message)) {
+    return (
+      "Google rejected the redirect URL. In Google Cloud the \u201cAuthorized " +
+      "redirect URI\u201d must be YOUR SUPABASE PROJECT's callback " +
+      "(https://<project-ref>.supabase.co/auth/callback) \u2014 not this app's " +
+      "/auth/callback, which Google never sees. Add this app's origin under " +
+      "\u201cAuthorized JavaScript origins\u201d and put this app's callback URL " +
+      "in Supabase -> Authentication -> URL Configuration -> Redirect URLs. " +
+      "The exact strings are listed in \u201cGoogle sign-in setup\u201d above."
+    );
+  }
+
+  if (/redirect url.*not allowed|not in.*allow|allowed_redirect/i.test(message)) {
+    return (
+      "Supabase refused the redirect target because it is not in the project's " +
+      "Redirect URLs allow list (Authentication \u2192 URL Configuration). Add " +
+      "http://localhost:3000/auth/callback (and your deployed origin) there."
+    );
+  }
 
   if (/provider.*not.*(enabled|supported)|is not enabled/i.test(message)) {
     return (

@@ -6,11 +6,20 @@ import { ArrowRight, CircleAlert, Eye, EyeOff, Loader2, Lock, Mail } from "lucid
 
 import AuthConfigNotice from "@/components/auth/AuthConfigNotice";
 import GoogleButton from "@/components/auth/GoogleButton";
+import OAuthSetupPanel from "@/components/auth/OAuthSetupPanel";
+import type { OAuthRedirectPlan } from "@/lib/auth-setup";
 import { describeAuthError } from "@/lib/auth-errors";
 import { getSupabaseEnvStatus } from "@/lib/env";
 import { createClient } from "@/lib/supabase/client";
 
-export default function LoginForm({ initialError }: { initialError?: string | null }) {
+export default function LoginForm({
+  initialError,
+  oauthPlan = null,
+}: {
+  initialError?: string | null;
+  /** Computed in the page (server) — the caller's origin comes from headers. */
+  oauthPlan?: OAuthRedirectPlan | null;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -62,6 +71,8 @@ export default function LoginForm({ initialError }: { initialError?: string | nu
       {!configured && <AuthConfigNotice />}
 
       <GoogleButton />
+
+      {configured && <OAuthSetupPanel plan={oauthPlan} />}
 
       {/* Divider */}
       <div className="flex items-center gap-3" aria-hidden="true">
