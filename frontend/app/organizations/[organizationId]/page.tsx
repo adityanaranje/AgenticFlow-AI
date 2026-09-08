@@ -1,3 +1,4 @@
+import type { ComponentType } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import {
@@ -16,7 +17,7 @@ import {
   getUserOrganizations,
   requireOrganizationMembership,
 } from "@/lib/organizations/server";
-import { canManageOrganization, canResearch } from "@/lib/organizations/rbac";
+import { canManageOrganization } from "@/lib/organizations/rbac";
 import type { OrganizationRole } from "@/lib/organizations/types";
 import { createClient } from "@/lib/supabase/server";
 
@@ -97,23 +98,43 @@ export default async function OrganizationPage({
       title: "Documents",
       count: docCount.count ?? 0,
       description: "Knowledge base files for this organization.",
-      href: canResearch(role) ? "#documents-phase-4" : null,
+      href: `/organizations/${organization.id}/documents`,
     },
     {
       icon: Microscope,
       title: "Research",
       count: researchCount.count ?? 0,
       description: "Agentic research runs.",
-      href: canResearch(role) ? "#research-phase-4" : null,
+      href: `/organizations/${organization.id}/research`,
     },
     {
       icon: FileSearch,
       title: "Reports",
       count: reportCount.count ?? 0,
       description: "Generated, cited reports.",
-      href: "#reports-phase-4",
+      href: `/organizations/${organization.id}/reports`,
     },
   ];
+
+  const workspaceCardInner = (
+    title: string,
+    Icon: ComponentType<{ className?: string }>,
+    count: number,
+    description: string,
+  ) => (
+    <>
+      <div className="flex items-center justify-between">
+        <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+          <Icon className="h-5 w-5" aria-hidden="true" />
+        </span>
+        <span className="text-2xl font-semibold text-zinc-900 dark:text-white">
+          {count}
+        </span>
+      </div>
+      <h3 className="mt-4 text-sm font-semibold text-zinc-900 dark:text-white">{title}</h3>
+      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{description}</p>
+    </>
+  );
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -188,28 +209,25 @@ export default async function OrganizationPage({
             Organization workspace
           </h2>
           <div className="grid gap-5 sm:grid-cols-3">
-            {workspaceCards.map(({ icon: Icon, title, count, description }) => (
-              <article key={title} className="card p-6">
-                <div className="flex items-center justify-between">
-                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
-                    <Icon className="h-5 w-5" aria-hidden="true" />
-                  </span>
-                  <span className="text-2xl font-semibold text-zinc-900 dark:text-white">
-                    {count}
-                  </span>
-                </div>
-                <h3 className="mt-4 text-sm font-semibold text-zinc-900 dark:text-white">
-                  {title}
-                </h3>
-                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  {description}
-                </p>
-              </article>
-            ))}
+            {workspaceCards.map(({ icon: Icon, title, count, description, href }) => {
+              const inner = (
+                <span className="card block p-6 transition hover:-translate-y-0.5 hover:shadow-md hover:shadow-zinc-900/5 dark:hover:shadow-black/30">
+                  {workspaceCardInner(title, Icon, count, description)}
+                </span>
+              );
+              return href ? (
+                <Link key={title} href={href} className="block">
+                  {inner}
+                </Link>
+              ) : (
+                <article key={title} className="card p-6 opacity-70">
+                  {workspaceCardInner(title, Icon, count, description)}
+                </article>
+              );
+            })}
           </div>
           <p className="mt-4 text-xs text-zinc-400">
-            Documents, research and reports open in the next phase of the
-            product.
+            Documents are live. Research and reports open in the next phases.
           </p>
         </section>
 

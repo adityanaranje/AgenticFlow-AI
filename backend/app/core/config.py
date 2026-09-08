@@ -60,6 +60,40 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="", alias="REDIS_URL")
     redis_ttl_seconds: int = Field(default=3600, alias="REDIS_TTL_SECONDS")
 
+    # Qdrant embedding collection shape
+    embedding_dimensions: int = Field(
+        default=1536, alias="EMBEDDING_DIMENSIONS"
+    )
+
+    # Document ingestion (text-embedding-3-small → 1536 dims; must match
+    # the configured embedding model. See QDRANT_COLLECTION.)
+    storage_bucket: str = Field(default="documents", alias="STORAGE_BUCKET")
+    max_upload_size_mb: int = Field(default=25, alias="MAX_UPLOAD_SIZE_MB")
+
+    # Chunking (character based, approximate). Configurable, never
+    # hard-coded magic numbers.
+    chunk_size: int = Field(default=1500, alias="CHUNK_SIZE")
+    chunk_overlap: int = Field(default=200, alias="CHUNK_OVERLAP")
+
+    # Document worker / job queue
+    document_job_queue: str = Field(
+        default="agentflow:documents:jobs", alias="DOCUMENT_JOB_QUEUE"
+    )
+
+    # Research worker / job queue
+    research_job_queue: str = Field(
+        default="agentflow:research:jobs", alias="RESEARCH_JOB_QUEUE"
+    )
+
+    # Research agent tuning
+    max_research_iterations: int = Field(
+        default=3, alias="MAX_RESEARCH_ITERATIONS"
+    )
+    research_timeout_seconds: int = Field(
+        default=600, alias="RESEARCH_TIMEOUT_SECONDS"
+    )
+    default_research_top_k: int = Field(default=5, alias="RESEARCH_TOP_K")
+
     llm_cache_enabled: bool = Field(default=True, alias="LLM_CACHE_ENABLED")
     semantic_cache_enabled: bool = Field(default=True, alias="SEMANTIC_CACHE_ENABLED")
     embedding_cache_enabled: bool = Field(default=True, alias="EMBEDDING_CACHE_ENABLED")

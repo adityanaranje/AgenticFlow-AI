@@ -144,6 +144,23 @@ def _fetch_membership_role(organization_id: str, user_id: str) -> str | None:
     return str(role) if role else None
 
 
+def get_membership_for(
+    user: AuthenticatedUser,
+    organization_id: str,
+) -> Membership | None:
+    """Resolve a user's membership in an org, or ``None`` if not a member.
+
+    Organization ids supplied by the client are validated here against the
+    membership table — never trusted blindly.
+    """
+    role = _fetch_membership_role(organization_id, user.id)
+
+    if role is None:
+        return None
+
+    return Membership(user=user, organization_id=organization_id, role=role)
+
+
 def require_organization_membership(
     organization_id: str = Path(..., description="Organization to authorize against"),
     user: AuthenticatedUser = Depends(get_current_user),
@@ -154,12 +171,12 @@ def require_organization_membership(
     any tenant data). Organization ids supplied by the client are validated
     here, never trusted blindly.
     """
-    role = _fetch_membership_role(organization_id, user.id)
+    membership = get_membership_for(user, organization_id)
 
-    if role is None:
+    if membership is None:
         raise _forbidden("You are not a member of this organization.")
 
-    return Membership(user=user, organization_id=organization_id, role=role)
+    return membership
 
 
 def require_role(

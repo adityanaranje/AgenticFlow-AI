@@ -133,3 +133,112 @@ class DocumentRepository:
         )
 
         return response.data or []
+
+    def count_chunks(
+        self,
+        document_id: str,
+        organization_id: str,
+    ) -> int:
+        """Return the number of chunks stored for a document."""
+        client = get_supabase()
+
+        if client is None:
+            return 0
+
+        response = (
+            client.table("document_chunks")
+            .select("id", count="exact", head=True)
+            .eq("document_id", document_id)
+            .eq("organization_id", organization_id)
+            .execute()
+        )
+
+        return int(response.count or 0)
+
+    def get_document(
+        self,
+        document_id: str,
+    ) -> dict[str, Any] | None:
+        """Look up a document by id only (no org filter). Callers MUST
+        authorize the organization before using the result."""
+        client = get_supabase()
+
+        if client is None:
+            return None
+
+        response = (
+            client.table("documents")
+            .select("*")
+            .eq("id", document_id)
+            .maybe_single()
+            .execute()
+        )
+
+        return response.data
+
+    def update(
+        self,
+        document_id: str,
+        organization_id: str,
+        fields: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Apply an arbitrary set of columns to a document."""
+        client = get_supabase()
+
+        if client is None:
+            return None
+
+        if not fields:
+            return None
+
+        response = (
+            client.table("documents")
+            .update(fields)
+            .eq("id", document_id)
+            .eq("organization_id", organization_id)
+            .select("*")
+            .maybe_single()
+            .execute()
+        )
+
+        return response.data
+
+    def delete_chunks(
+        self,
+        document_id: str,
+        organization_id: str,
+    ) -> None:
+        """Remove all chunk rows for a document (idempotent re-processing)."""
+        client = get_supabase()
+        if client is None:
+            return
+        try:
+            client.table("document_chunks").delete().eq(
+                "document_id", document_id
+            ).eq("organization_id", organization_id).execute()
+        except Exception:
+            from app.core.logging import get_logger as _lg
+
+            _lg(__name__).exception(
+                "Failed to delete chunks for document %s", document_id
+            )
+
+    def delete(
+        self,
+        document_id: str,
+        organization_id: str,
+    ) -> bool:
+        client = get_supabase()
+
+        if client is None:
+            return False
+
+        response = (
+            client.table("documents")
+            .delete()
+            .eq("id", document_id)
+            .eq("organization_id", organization_id)
+            .execute()
+        )
+
+        return bool(response.data)

@@ -25,19 +25,48 @@ export interface RequestOptions extends Omit<RequestInit, "body"> {
   body?: unknown;
 }
 
+const isFormData = (body: unknown): body is FormData =>
+  typeof FormData !== "undefined" && body instanceof FormData;
+
+/**
+ * The FastAPI backend authenticates with the caller's Supabase session
+ * (``Authorization: Bearer <access_token>``). In the browser we attach the
+ * signed-in user's token so backend endpoints can authorize the request.
+ */
+async function resolveAuthHeaders(): Promise<Record<string, string>> {
+  if (typeof window === "undefined") return {};
+  try {
+    const { createClient } = await import("@/lib/supabase/client");
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { body, headers, ...init } = options;
 
   const url = `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
 
+  const authHeaders = await resolveAuthHeaders();
+
   const response = await fetch(url, {
     ...init,
     headers: {
       Accept: "application/json",
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      // FormData sets its own multipart Content-Type boundary.
+      ...(body !== undefined && !isFormData(body)
+        ? { "Content-Type": "application/json" }
+        : {}),
+      ...authHeaders,
       ...headers,
     },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: isFormData(body) ? (body as unknown as BodyInit) : body !== undefined ? JSON.stringify(body) : undefined,
     cache: "no-store",
   });
 

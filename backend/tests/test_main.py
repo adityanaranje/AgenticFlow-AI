@@ -40,15 +40,19 @@ def test_phase1_api_routers_are_defined_with_versioned_prefixes():
     expected = [
         (auth_router, "/api/v1/auth"),
         (organizations_router, "/api/v1/organizations"),
-        (documents_router, "/api/v1/documents"),
-        (research_router, "/api/v1/research"),
-        (reports_router, "/api/v1/reports"),
-        (evaluations_router, "/api/v1/evaluations"),
+        # Phase 4: document endpoints are org-scoped (every handler enforces
+        # organization membership from the path) and still live under /api/v1.
+        (documents_router, "/api/v1/organizations/{organization_id}/documents"),
+        # Phase 5: research / reports / evaluations are org-scoped too.
+        (research_router, "/api/v1/organizations/{organization_id}/research"),
+        (reports_router, "/api/v1/organizations/{organization_id}/reports"),
+        (evaluations_router, "/api/v1/organizations/{organization_id}/evaluations"),
         (health_router, "/api/v1"),
     ]
 
     for router, prefix in expected:
         assert router.prefix == prefix
+        assert prefix.startswith("/api/v1"), "every router must stay under /api/v1"
 
     # Every phase-1 router must be included in the application: the
     # health router contributes the versioned endpoint, and importing
