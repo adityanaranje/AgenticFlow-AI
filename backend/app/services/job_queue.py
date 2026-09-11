@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
 from app.cache.redis_client import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -41,6 +43,11 @@ def _pop(queue: str, timeout: int = 0) -> dict | None:
             return None
         _, raw = item
         return json.loads(raw)
+    except RedisTimeoutError:
+        # Expected while idle: the client's socket read timeout (3s) is
+        # shorter than the BLPOP block window, so an empty wait surfaces as
+        # a socket TimeoutError — it only means "no job arrived yet".
+        return None
     except Exception:
         logger.exception("Failed to pop a job from %s", queue)
         return None

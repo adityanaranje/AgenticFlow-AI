@@ -1,27 +1,56 @@
 """Tests for Qdrant vector store tenant scoping (Phase 4, §10)."""
 
+import pytest
 from qdrant_client.http import models as qmodels
 
 from app.services import vector_store
 
 
+@pytest.fixture(autouse=True)
+def _reset_payload_index_flag(monkeypatch):
+    monkeypatch.setattr(vector_store, "_payload_indexes_ready", False)
+
+
 class FakeClient:
     """Stand-in Qdrant client that records calls."""
 
-    def __init__(self):
+    def __init__(self, has_collection=False):
         self.created = []
+        self.created_indexes = []
         self.upserted = []
         self.deleted_filters = []
         self.search_calls = []
+        self.has_collection = has_collection
+        self.fail_index_creation = False
 
     def get_collections(self):
         class _Resp:
             collections = []
 
-        return _Resp()
+        resp = _Resp()
+        if self.has_collection:
+            from app.core.config import settings
+
+            class _Col:
+                name = settings.qdrant_collection
+
+            resp.collections = [_Col()]
+        return resp
+
+    def get_collection(self, name):
+        class _Info:
+            payload_schema = {}
+
+        return _Info()
 
     def create_collection(self, **kwargs):
         self.created.append(kwargs)
+        self.has_collection = True
+
+    def create_payload_index(self, **kwargs):
+        if self.fail_index_creation:
+            raise RuntimeError("index API unavailable")
+        self.created_indexes.append(kwargs)
 
     def upsert(self, **kwargs):
         self.upserted.append(kwargs)
@@ -111,6 +140,47 @@ def test_delete_scoped_to_document_and_org(monkeypatch):
     must = selector.filter.must
     keys = [getattr(c, "key", None) for c in must]
     assert "organization_id" in keys and "document_id" in keys
+
+
+def test_ensure_collection_creates_payload_indexes_once(monkeypatch):
+    """Tenant-filter fields need payload indexes; strict Qdrant clusters
+    (e.g. Cloud) reject unindexed filtered deletes/searches with 400."""
+    client = FakeClient()
+    monkeypatch.setattr(vector_store, "_client", lambda: client)
+
+    vector_store.ensure_collection()
+    fields = [c["field_name"] for c in client.created_indexes]
+    assert fields == ["organization_id", "document_id"]
+    assert all(
+        c["field_schema"] == qmodels.PayloadSchemaType.UUID
+        for c in client.created_indexes
+    )
+
+    # Second ensure must not re-create anything (per-process flag).
+    vector_store.ensure_collection()
+    assert len(client.created_indexes) == 2
+
+
+def test_preexisting_collection_still_gets_indexes(monkeypatch):
+    """Collections created before this fix get their indexes added."""
+    client = FakeClient(has_collection=True)
+    monkeypatch.setattr(vector_store, "_client", lambda: client)
+
+    vector_store.ensure_collection()
+    assert not client.created  # no re-creation of the collection itself
+    assert [c["field_name"] for c in client.created_indexes] == [
+        "organization_id",
+        "document_id",
+    ]
+
+
+def test_index_creation_failure_does_not_block_ingestion(monkeypatch):
+    client = FakeClient()
+    client.fail_index_creation = True
+    monkeypatch.setattr(vector_store, "_client", lambda: client)
+
+    vector_store.ensure_collection()  # must not raise
+    assert vector_store._payload_indexes_ready is False  # retried next time
 
 
 def test_search_can_require_org_never_unrestricted(monkeypatch):

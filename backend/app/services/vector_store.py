@@ -38,24 +38,73 @@ def _client() -> QdrantClient:
     return client
 
 
+# Payload fields used in every tenant-scoped filter. Qdrant requires a
+# payload index for filtered fields — strict clusters (e.g. Qdrant Cloud)
+# REJECT unindexed filter deletes/searches with:
+#   "Index required but not found for \"organization_id\" of one of the
+#    following types: [keyword, uuid]"
+# so the indexes are ensured alongside the collection.
+_FILTER_INDEX_FIELDS: tuple[str, ...] = ("organization_id", "document_id")
+
+_payload_indexes_ready = False
+
+
+def _ensure_payload_indexes(client: QdrantClient) -> None:
+    """Create payload indexes for the tenant-filter fields (idempotent)."""
+    global _payload_indexes_ready
+    if _payload_indexes_ready:
+        return
+
+    name = settings.qdrant_collection
+    try:
+        info = client.get_collection(name)
+        existing = getattr(info, "payload_schema", None) or {}
+    except Exception:
+        existing = {}
+
+    ok = True
+    for field in _FILTER_INDEX_FIELDS:
+        if field in existing:
+            continue
+        try:
+            client.create_payload_index(
+                collection_name=name,
+                field_name=field,
+                field_schema=qmodels.PayloadSchemaType.UUID,
+            )
+            logger.info("Created Qdrant payload index %s.%s", name, field)
+        except Exception:
+            ok = False
+            logger.warning(
+                "Could not create payload index for %s.%s — strict Qdrant "
+                "clusters reject filtered vector operations without it.",
+                name,
+                field,
+                exc_info=True,
+            )
+    if ok:
+        _payload_indexes_ready = True
+
+
 def ensure_collection(client: Optional[QdrantClient] = None) -> None:
-    """Create the collection if it does not exist (dimension = model)."""
+    """Create the collection if it does not exist (dimension = model),
+    and ensure the payload indexes required for tenant-scoped filtering."""
     client = client or _client()
     name = settings.qdrant_collection
     collections = client.get_collections().collections
-    if any(c.name == name for c in collections):
-        return
+    if not any(c.name == name for c in collections):
+        client.create_collection(
+            collection_name=name,
+            vectors_config=qmodels.VectorParams(
+                size=settings.embedding_dimensions,
+                distance=DISTANCE,
+            ),
+        )
+        logger.info(
+            "Created Qdrant collection %s (dims=%s)", name, settings.embedding_dimensions
+        )
 
-    client.create_collection(
-        collection_name=name,
-        vectors_config=qmodels.VectorParams(
-            size=settings.embedding_dimensions,
-            distance=DISTANCE,
-        ),
-    )
-    logger.info(
-        "Created Qdrant collection %s (dims=%s)", name, settings.embedding_dimensions
-    )
+    _ensure_payload_indexes(client)
 
 
 def upsert_chunk_vectors(
