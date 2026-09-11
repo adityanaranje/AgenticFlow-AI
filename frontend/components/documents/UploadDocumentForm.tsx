@@ -38,6 +38,11 @@ export default function UploadDocumentForm({
       return;
     }
 
+    // Capture the form before awaiting: React nullifies `event.currentTarget`
+    // once the synthetic event finishes dispatch, so reading it after an
+    // `await` throws `Cannot read properties of null`.
+    const formEl = event.currentTarget;
+
     setError(null);
     setSuccess(null);
     setUploading(true);
@@ -108,7 +113,7 @@ export default function UploadDocumentForm({
 
       setFile(null);
       // Reset the input value so the same file can be chosen again.
-      const input = event.currentTarget.elements.namedItem(
+      const input = formEl.elements.namedItem(
         "file",
       ) as HTMLInputElement | null;
       if (input) input.value = "";
