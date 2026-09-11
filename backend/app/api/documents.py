@@ -151,17 +151,22 @@ def reprocess_document(
 
     Transient backend issues (e.g. a vector store that was briefly
     misconfigured) mark documents as failed even though the stored file is
-    perfectly fine. This endpoint resets the record to ``pending``, clears
-    the error and enqueues the same pipeline the upload uses.
+    perfectly fine. Older processing runs may also have left metadata gaps
+    (e.g. a null page count for text documents), so COMPLETED documents can
+    be reprocessed too — the worker re-derives everything idempotently.
+    Documents already waiting/processing are rejected (409).
+
+    This endpoint resets the record to ``pending``, clears the error and
+    enqueues the same pipeline the upload uses.
     """
     repository = DocumentRepository()
     record = repository.get_by_id(document_id, organization_id)
     if record is None:
         raise _NOT_FOUND
-    if record.get("status") != "failed":
+    if record.get("status") not in ("failed", "completed"):
         raise HTTPException(
             status_code=409,
-            detail="Only failed documents can be reprocessed.",
+            detail="Only failed or completed documents can be reprocessed.",
         )
 
     repository.update(

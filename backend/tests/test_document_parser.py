@@ -13,6 +13,34 @@ def test_txt_parse(sample_txt):
     assert parsed.pages and parsed.pages[0].text
 
 
+def test_txt_and_md_report_one_page_not_null(sample_txt):
+    """Formats without page boundaries are parsed as a single page and must
+    report page_count 1 — a successfully processed document never stores a
+    null page count (the UI renders '—' for null)."""
+    txt = parse_document(sample_txt.encode("utf-8"), file_type="txt", filename="a.txt")
+    assert txt.page_count == 1
+
+    md = "# Title\n\nBody text.\n" * 10
+    parsed_md = parse_document(md.encode("utf-8"), file_type="md", filename="b.md")
+    assert parsed_md.page_count == 1
+
+    # No extractable text at all still reports None (nothing was parsed).
+    assert parse_document(b"", file_type="txt", filename="empty.txt").page_count is None
+
+
+def test_docx_reports_one_page():
+    from docx import Document as Docx
+
+    doc = Docx()
+    doc.add_heading("Company Policy", 0)
+    doc.add_paragraph("All employees follow the data security guidelines.")
+    buffer = io.BytesIO()
+    doc.save(buffer)
+
+    parsed = parse_document(buffer.getvalue(), file_type="docx", filename="c.docx")
+    assert parsed.page_count == 1
+
+
 def test_markdown_parse():
     md = "# Title\n\nBody paragraph with **formatting**.\n\n## Section\n\nMore text.\n" * 10
     parsed = parse_document(md.encode("utf-8"), file_type="md", filename="b.md")

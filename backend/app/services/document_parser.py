@@ -77,12 +77,19 @@ class ParsedDocument:
 
     @property
     def page_count(self) -> Optional[int]:
+        """Number of extracted pages (None only when nothing was parsed).
+
+        PDFs report their real page count (from the 1-based page numbers).
+        Formats without page boundaries — TXT / MD / DOCX — are parsed as a
+        single page and report 1, so the UI never shows a null page count
+        for a successfully processed document.
+        """
         if not self.pages:
             return None
         numbered = [p for p in self.pages if p.page_number is not None]
         if numbered:
             return len(numbered)
-        return None if len(self.pages) == 1 else len(self.pages)
+        return len(self.pages)
 
 
 def normalize_text(raw: str) -> str:

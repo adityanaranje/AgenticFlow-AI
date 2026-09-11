@@ -140,6 +140,11 @@ export default async function OrganizationDocumentDetailPage({
     .limit(100);
 
   const failed = document.status === "failed";
+  // Legacy rows processed before the parser reported page counts for
+  // text-like documents (TXT/MD/DOCX) stay null — offer a one-click refresh.
+  const missingMetadata =
+    document.status === "completed" && (document.page_count ?? null) === null;
+  const showRetry = (failed || missingMetadata) && canResearch(membershipRole);
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -234,10 +239,31 @@ export default async function OrganizationDocumentDetailPage({
                 {document.processing_error ||
                   "This document could not be processed."}
               </p>
-              {canResearch(membershipRole) && (
+              {showRetry && (
                 <RetryProcessingButton
                   organizationId={organization.id}
                   documentId={document.id}
+                />
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Missing metadata from an older processing run */}
+        {!failed && missingMetadata && (
+          <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+            <div>
+              <p className="font-semibold">Metadata incomplete</p>
+              <p className="mt-1">
+                This document was processed by an older version that did not
+                record page information. Reprocess it to fill in the missing
+                details.
+              </p>
+              {showRetry && (
+                <RetryProcessingButton
+                  organizationId={organization.id}
+                  documentId={document.id}
+                  label="Refresh metadata"
                 />
               )}
             </div>

@@ -7,7 +7,8 @@ import { Loader2, RotateCcw } from "lucide-react";
 import apiClient from "@/lib/api/client";
 
 /**
- * Retry background processing for a FAILED document.
+ * Retry background processing for a FAILED document (or refresh metadata
+ * of a completed one that predates a parser fix — e.g. a null page count).
  *
  * Calls the backend reprocess endpoint (researcher+ enforced server-side),
  * which resets the document to `pending` and re-enqueues the standard
@@ -16,9 +17,11 @@ import apiClient from "@/lib/api/client";
 export default function RetryProcessingButton({
   organizationId,
   documentId,
+  label = "Retry processing",
 }: {
   organizationId: string;
   documentId: string;
+  label?: string;
 }) {
   const router = useRouter();
   const [retrying, setRetrying] = useState(false);
@@ -54,7 +57,7 @@ export default function RetryProcessingButton({
         ) : (
           <RotateCcw className="h-4 w-4" aria-hidden="true" />
         )}
-        {retrying ? "Retrying…" : "Retry processing"}
+        {retrying ? "Retrying…" : label}
       </button>
       {error && <p className="mt-2 text-xs text-rose-600 dark:text-rose-300">{error}</p>}
     </div>

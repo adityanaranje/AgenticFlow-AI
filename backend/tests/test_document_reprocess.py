@@ -80,10 +80,11 @@ def test_reprocess_runs_inline_when_redis_absent(monkeypatch, failed_doc):
     assert result["queued"] is False
 
 
-def test_reprocess_rejects_non_failed_document(monkeypatch, failed_doc):
-    failed_doc["status"] = "completed"
+def test_reprocess_rejects_in_flight_document(monkeypatch, failed_doc):
+    failed_doc["status"] = "processing"
     repo = FakeRepo(failed_doc)
     monkeypatch.setattr(documents_api, "DocumentRepository", lambda: repo)
+    monkeypatch.setattr(documents_api.job_queue, "enqueue_document", lambda _: True)
 
     with pytest.raises(HTTPException) as exc_info:
         documents_api.reprocess_document(
@@ -91,6 +92,26 @@ def test_reprocess_rejects_non_failed_document(monkeypatch, failed_doc):
         )
     assert exc_info.value.status_code == 409
     assert repo.updates == []  # nothing was reset
+
+
+def test_reprocess_allows_completed_document(monkeypatch, failed_doc):
+    """Completed documents can be reprocessed to rebuild derived data /
+    metadata (e.g. legacy rows with a null page count)."""
+    failed_doc["status"] = "completed"
+    failed_doc["page_count"] = None
+    repo = FakeRepo(failed_doc)
+    monkeypatch.setattr(documents_api, "DocumentRepository", lambda: repo)
+    enqueued = []
+    monkeypatch.setattr(
+        documents_api.job_queue, "enqueue_document", lambda doc_id: enqueued.append(doc_id) or True
+    )
+
+    result = documents_api.reprocess_document(
+        organization_id="org-A", document_id="doc-1", membership=None
+    )
+
+    assert enqueued == ["doc-1"]
+    assert result["document"]["status"] == "pending"
 
 
 def test_reprocess_missing_document_is_404(monkeypatch):
