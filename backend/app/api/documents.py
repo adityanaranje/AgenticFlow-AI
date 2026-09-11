@@ -9,6 +9,7 @@ never trusts a client-supplied ``organization_id`` or document ownership.
     GET    /organizations/{organization_id}/documents/{document_id}
     GET    /organizations/{organization_id}/documents/{document_id}/chunks
     GET    /organizations/{organization_id}/documents/{document_id}/retrieve
+    POST   /organizations/{organization_id}/documents/{document_id}/reprocess
     DELETE /organizations/{organization_id}/documents/{document_id}
 
 Upload accepts a ``multipart/form-data`` ``file`` field. Storage paths are
@@ -27,7 +28,7 @@ from app.core.exceptions import ConflictError, ValidationError
 from app.core.logging import get_logger
 from app.core.rbac import require_admin, require_researcher, require_viewer
 from app.db.repositories.documents import DocumentRepository
-from app.services import document_service, retrieval
+from app.services import document_service, job_queue, retrieval
 
 logger = get_logger(__name__)
 
@@ -138,6 +139,50 @@ def retrieve_document(
         filters={"document_id": document_id},
     )
     return {"results": results}
+
+
+@router.post("/{document_id}/reprocess")
+def reprocess_document(
+    organization_id: str,
+    document_id: str,
+    membership: Membership = Depends(require_researcher()),
+) -> dict:
+    """Re-queue a FAILED document for processing (researcher+).
+
+    Transient backend issues (e.g. a vector store that was briefly
+    misconfigured) mark documents as failed even though the stored file is
+    perfectly fine. This endpoint resets the record to ``pending``, clears
+    the error and enqueues the same pipeline the upload uses.
+    """
+    repository = DocumentRepository()
+    record = repository.get_by_id(document_id, organization_id)
+    if record is None:
+        raise _NOT_FOUND
+    if record.get("status") != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed documents can be reprocessed.",
+        )
+
+    repository.update(
+        document_id,
+        organization_id,
+        {"status": "pending", "processing_error": None},
+    )
+
+    queued = job_queue.enqueue_document(document_id)
+    if not queued:
+        # Same dev fallback as upload: without Redis, run the pipeline
+        # inline so the document still gets processed.
+        from app.workers.document_worker import process_document
+
+        logger.info(
+            "Redis unavailable; reprocessing document %s inline.", document_id
+        )
+        process_document(document_id)
+
+    updated = repository.get_by_id(document_id, organization_id)
+    return {"document": updated or record, "queued": queued}
 
 
 @router.delete("/{document_id}")

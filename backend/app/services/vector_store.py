@@ -101,7 +101,8 @@ def _create_collection(client: QdrantClient, name: str) -> None:
 
 def _collection_is_compatible(client: QdrantClient, name: str) -> bool:
     """Whether the existing collection matches this app's vector layout:
-    a single UNNAMED dense vector of ``embedding_dimensions`` (Cosine).
+    a single UNNAMED dense vector of ``embedding_dimensions`` (Cosine),
+    and no sparse-only layout.
 
     Returns True when the shape cannot be inspected (introspection failures
     must never trigger a destructive recreate)."""
@@ -114,9 +115,14 @@ def _collection_is_compatible(client: QdrantClient, name: str) -> bool:
         return True
 
     if vectors is None:
-        return True
+        # No dense vectors at all. A sparse-only collection (or one with an
+        # empty vector map) is equally unusable — every unnamed dense
+        # upsert/search 400s with "Not existing vector name error".
+        # If we cannot see sparse vectors either, introspection is
+        # incomplete; never recreate on incomplete information.
+        return not bool(getattr(params, "sparse_vectors", None))
     if not isinstance(vectors, qmodels.VectorParams):
-        return False  # named-vector layout — our unnamed uploads would 400
+        return False  # named-vector layout (or empty) — our unnamed uploads would 400
     if vectors.size != settings.embedding_dimensions:
         return False
     if vectors.distance != DISTANCE:
@@ -124,14 +130,63 @@ def _collection_is_compatible(client: QdrantClient, name: str) -> bool:
     return True
 
 
+def _recreate_incompatible_collection(client: QdrantClient) -> bool:
+    """Drop and recreate the collection when its stored vector layout is
+    incompatible with this app's unnamed-vector requests.
+
+    Returns True when the collection was recreated (and the tenant-filter
+    payload indexes were rebuilt); False when the collection looks
+    compatible — meaning an observed vector error is NOT fixable by a
+    recreate and must surface to the caller."""
+    global _payload_indexes_ready
+
+    name = settings.qdrant_collection
+    if _collection_is_compatible(client, name):
+        return False
+
+    logger.warning(
+        "Qdrant collection %s has an incompatible vector layout for this "
+        "app (single unnamed vector, dims=%s, cosine) — dropping and "
+        "recreating it. Re-process documents to repopulate vectors.",
+        name,
+        settings.embedding_dimensions,
+    )
+    client.delete_collection(name)
+    _create_collection(client, name)
+    _payload_indexes_ready = False  # indexes dropped with the collection
+    _ensure_payload_indexes(client)
+    return True
+
+
+# Substrings identifying Qdrant HTTP 400s caused purely by the collection's
+# vector layout rejecting our unnamed-vector requests (e.g. a collection
+# created externally with named vectors):
+#   "Wrong input: Not existing vector name error: "
+_LAYOUT_ERROR_MARKERS: tuple[str, ...] = (
+    "Not existing vector name error",
+    "Vector dimension error",
+)
+
+
+def _is_vector_layout_error(exc: BaseException) -> bool:
+    """Whether a Qdrant error indicates the collection's vector layout
+    rejected this app's (unnamed, fixed-dimension) vector request.
+
+    Detection is by response text so it works across client transports;
+    the recreate itself only happens after re-inspecting the collection
+    (see :func:`_recreate_incompatible_collection`)."""
+    text = str(getattr(exc, "content", "") or "") or str(exc)
+    return any(marker in text for marker in _LAYOUT_ERROR_MARKERS)
+
+
 def ensure_collection(client: Optional[QdrantClient] = None) -> None:
     """Create the collection if it does not exist (dimension = model),
     and ensure the payload indexes required for tenant-scoped filtering.
 
     An existing collection with an INCOMPATIBLE vector layout (named
-    vectors, wrong dimension or distance) is unusable by this app — every
-    upsert/search fails ("Not existing vector name error") — so it is
-    dropped and recreated with a loud warning."""
+    vectors, sparse-only, wrong dimension or distance) is unusable by this
+    app — every upsert/search fails ("Not existing vector name error") —
+    so it is dropped and recreated with a loud warning."""
     global _payload_indexes_ready
 
     client = client or _client()
@@ -141,17 +196,8 @@ def ensure_collection(client: Optional[QdrantClient] = None) -> None:
 
     if not exists:
         _create_collection(client, name)
-    elif not _collection_is_compatible(client, name):
-        logger.warning(
-            "Qdrant collection %s has an incompatible vector layout for this "
-            "app (single unnamed vector, dims=%s, cosine) — dropping and "
-            "recreating it. Re-process documents to repopulate vectors.",
-            name,
-            settings.embedding_dimensions,
-        )
-        client.delete_collection(name)
-        _create_collection(client, name)
-        _payload_indexes_ready = False  # indexes dropped with the collection
+    else:
+        _recreate_incompatible_collection(client)
 
     _ensure_payload_indexes(client)
 
@@ -177,6 +223,23 @@ def upsert_chunk_vectors(
         )
         for point in points
     ]
+    try:
+        client.upsert(collection_name=settings.qdrant_collection, points=payload)
+        return
+    except Exception as exc:
+        if not _is_vector_layout_error(exc):
+            raise
+        # The collection was (re)created or mutated out-of-band with a
+        # layout this app cannot write to. Verify + rebuild, then retry
+        # exactly once; a second failure surfaces below.
+        logger.warning(
+            "Qdrant upsert rejected with a vector-layout error — attempting "
+            "one self-heal recreate of collection %s (%s)",
+            settings.qdrant_collection,
+            exc,
+        )
+        if not _recreate_incompatible_collection(client):
+            raise  # collection looks compatible; recreate cannot fix this
     client.upsert(collection_name=settings.qdrant_collection, points=payload)
 
 
@@ -218,6 +281,38 @@ def delete_document_vectors(
         raise
 
 
+def _execute_search(
+    client: QdrantClient,
+    *,
+    collection_name: str,
+    query_vector: list[float],
+    query_filter: qmodels.Filter,
+    limit: int,
+) -> list[Any]:
+    """Run a dense vector search across qdrant-client versions.
+
+    qdrant-client >= 1.19 REMOVED the deprecated ``search`` method (an
+    ``AttributeError`` at call time on fresh installs); ``query_points``
+    is its replacement since 1.10. Older clients only have ``search``.
+    """
+    if hasattr(client, "query_points"):
+        response = client.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            query_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+        )
+        return list(response.points or [])
+    return client.search(
+        collection_name=collection_name,
+        query_vector=query_vector,
+        query_filter=query_filter,
+        limit=limit,
+        with_payload=True,
+    )
+
+
 def search_vectors(
     *,
     organization_id: str,
@@ -254,13 +349,32 @@ def search_vectors(
                 qmodels.FieldCondition(key=key, match=qmodels.MatchValue(value=str(value)))
             )
 
-    results = client.search(
-        collection_name=settings.qdrant_collection,
-        query_vector=query_vector,
-        query_filter=qmodels.Filter(must=must),
-        limit=top_k,
-        with_payload=True,
-    )
+    try:
+        results = _execute_search(
+            client,
+            collection_name=settings.qdrant_collection,
+            query_vector=query_vector,
+            query_filter=qmodels.Filter(must=must),
+            limit=top_k,
+        )
+    except Exception as exc:
+        if not _is_vector_layout_error(exc):
+            raise
+        logger.warning(
+            "Qdrant search rejected with a vector-layout error — attempting "
+            "one self-heal recreate of collection %s (%s)",
+            settings.qdrant_collection,
+            exc,
+        )
+        if not _recreate_incompatible_collection(client):
+            raise
+        results = _execute_search(
+            client,
+            collection_name=settings.qdrant_collection,
+            query_vector=query_vector,
+            query_filter=qmodels.Filter(must=must),
+            limit=top_k,
+        )
 
     return [
         {

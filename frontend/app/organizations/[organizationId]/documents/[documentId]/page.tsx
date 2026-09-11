@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 
 import OrgHeader from "@/components/organizations/OrgHeader";
+import RetryProcessingButton from "@/components/documents/RetryProcessingButton";
+import { canResearch } from "@/lib/organizations/rbac";
 import {
   getUserOrganizations,
   requireOrganizationMembership,
@@ -79,7 +81,9 @@ export default async function OrganizationDocumentDetailPage({
   // Enforce membership before any tenant data is read. A non-member never
   // receives the document or its chunks (requireOrganizationMembership
   // redirects them away first).
-  const { organization } = await requireOrganizationMembership(organizationId);
+  const { organization, membership } =
+    await requireOrganizationMembership(organizationId);
+  const membershipRole = membership.role;
 
   const [allMemberships, supabase] = await Promise.all([
     getUserOrganizations(),
@@ -230,6 +234,12 @@ export default async function OrganizationDocumentDetailPage({
                 {document.processing_error ||
                   "This document could not be processed."}
               </p>
+              {canResearch(membershipRole) && (
+                <RetryProcessingButton
+                  organizationId={organization.id}
+                  documentId={document.id}
+                />
+              )}
             </div>
           </div>
         )}
