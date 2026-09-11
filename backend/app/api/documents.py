@@ -23,10 +23,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from app.core.auth import Membership
-from app.core.exceptions import ValidationError
+from app.core.exceptions import ConflictError, ValidationError
+from app.core.logging import get_logger
 from app.core.rbac import require_admin, require_researcher, require_viewer
 from app.db.repositories.documents import DocumentRepository
 from app.services import document_service, retrieval
+
+logger = get_logger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/organizations/{organization_id}/documents",
@@ -60,7 +63,16 @@ async def upload_document(
         )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
+        # Always log unexpected failures — the real cause must be visible in
+        # the server log, not just as an opaque 500 in the browser.
+        logger.exception(
+            "Document upload failed (org=%s, file=%s).",
+            organization_id,
+            filename,
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return {"document": record, "message": "Document uploaded."}

@@ -23,6 +23,29 @@ class DocumentRepository:
 
         return response.data
 
+    def get_by_checksum(
+        self,
+        organization_id: str,
+        checksum: str,
+    ) -> dict[str, Any] | None:
+        """Return the organization's document with this content checksum
+        (mirrors the ``documents_org_checksum_idx`` unique index), if any."""
+        client = get_supabase()
+
+        if client is None:
+            return None
+
+        response = (
+            client.table("documents")
+            .select("*")
+            .eq("organization_id", organization_id)
+            .eq("checksum", checksum)
+            .maybe_single()
+            .execute()
+        )
+
+        return response.data
+
     def get_by_id(
         self,
         document_id: str,

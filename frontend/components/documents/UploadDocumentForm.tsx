@@ -65,12 +65,44 @@ export default function UploadDocumentForm({
       );
 
       const payload = (await response.json().catch(() => null)) as
-        | { document?: { id?: string }; error?: string; message?: string }
+        | {
+            document?: {
+              id?: string;
+              status?: string;
+              processing_error?: string | null;
+            };
+            detail?: string | Array<{ msg?: string }>;
+            error?: string;
+            message?: string;
+          }
         | null;
 
       if (!response.ok) {
-        setError(payload?.error ?? "Upload failed. Please try again.");
+        // FastAPI reports errors under `detail` (a string for HTTPException,
+        // or a list of {msg} objects for request-validation errors).
+        const detail =
+          typeof payload?.detail === "string"
+            ? payload.detail
+            : Array.isArray(payload?.detail)
+              ? payload.detail
+                  .map((item) => item?.msg)
+                  .filter(Boolean)
+                  .join(" ")
+              : undefined;
+        setError(detail ?? payload?.error ?? "Upload failed. Please try again.");
         setUploading(false);
+        return;
+      }
+
+      // The record may be stored but processing can fail inline (e.g. in a
+      // dev setup without Redis, processing runs inside the request and its
+      // outcome comes back on the document itself).
+      if (payload?.document?.status === "failed") {
+        onUploaded?.();
+        setError(
+          payload.document.processing_error ??
+            `"${file.name}" was stored but processing failed. Check that the document worker, OpenAI and Qdrant are configured.`,
+        );
         return;
       }
 

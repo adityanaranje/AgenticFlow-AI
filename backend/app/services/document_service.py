@@ -18,7 +18,7 @@ import hashlib
 from typing import Any
 
 from app.core.config import settings
-from app.core.exceptions import ValidationError
+from app.core.exceptions import ConflictError, ValidationError
 from app.core.logging import get_logger
 from app.db.repositories.documents import DocumentRepository
 from app.services import document_parser, document_storage
@@ -33,6 +33,18 @@ _TYPE_LABELS = {"pdf": "PDF", "txt": "plain text", "md": "Markdown", "docx": "Wo
 def compute_checksum(data: bytes) -> str:
     """SHA-256 hex digest of the raw file bytes."""
     return hashlib.sha256(data).hexdigest()
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    """Best-effort detection of Postgres unique-violation errors (23505)."""
+    code = str(getattr(exc, "code", "") or "")
+    message = str(exc).lower()
+    return (
+        code == "23505"
+        or "duplicate key" in message
+        or "documents_org_checksum" in message
+        or "unique constraint" in message
+    )
 
 
 def max_upload_bytes() -> int:
@@ -84,12 +96,14 @@ def resolve_file_type(filename: str, content_type: str) -> str:
     return ext
 
 
-def _storage_payload(filename: str, file_type: str, data: bytes) -> dict[str, Any]:
+def _storage_payload(
+    filename: str, file_type: str, data: bytes, checksum: str | None = None
+) -> dict[str, Any]:
     return {
         "filename": filename,
         "file_type": file_type,
         "file_size": len(data),
-        "checksum": compute_checksum(data),
+        "checksum": checksum or compute_checksum(data),
         "status": "pending",
         "storage_path": "",
     }
@@ -107,9 +121,10 @@ def create_and_start_processing(
 
     Steps:
       1. validate type + size
-      2. create the document record (status ``pending``)
-      3. upload bytes to private storage under the server-derived path
-      4. enqueue the worker job (or process inline when Redis is absent)
+      2. reject duplicate content for the same organization (409 conflict)
+      3. create the document record (status ``pending``)
+      4. upload bytes to private storage under the server-derived path
+      5. enqueue the worker job (or process inline when Redis is absent)
 
     Returns the (possibly updated) document record.
     """
@@ -119,11 +134,34 @@ def create_and_start_processing(
     import uuid
 
     document_id = str(uuid.uuid4())
+    checksum = compute_checksum(data)
     storage_path = document_storage.build_storage_path(
         organization_id, document_id, filename
     )
 
-    base = _storage_payload(filename, file_type, data)
+    repository = DocumentRepository()
+
+    # Duplicate guard: the documents table enforces uniqueness of
+    # (organization_id, checksum) via ``documents_org_checksum_idx`` —
+    # surface a friendly conflict instead of a raw database error (500).
+    # The lookup itself is advisory; the unique index remains authoritative.
+    existing = None
+    try:
+        existing = repository.get_by_checksum(organization_id, checksum)
+    except Exception:
+        logger.warning(
+            "Checksum lookup failed for org=%s; proceeding without pre-check.",
+            organization_id,
+            exc_info=True,
+        )
+
+    if existing is not None:
+        raise ConflictError(
+            "This exact file has already been uploaded to this organization "
+            f"(document '{existing.get('filename') or filename}')."
+        )
+
+    base = _storage_payload(filename, file_type, data, checksum)
     base.update(
         {
             "id": document_id,
@@ -133,9 +171,14 @@ def create_and_start_processing(
         }
     )
 
-    repository = DocumentRepository()
-
-    record = repository.create(base)
+    try:
+        record = repository.create(base)
+    except Exception as exc:
+        if _is_unique_violation(exc):
+            raise ConflictError(
+                "This exact file has already been uploaded to this organization."
+            ) from exc
+        raise
     if record is None:
         raise RuntimeError("Could not create the document record.")
 

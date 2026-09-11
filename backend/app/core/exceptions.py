@@ -12,5 +12,9 @@ class ExternalServiceError(AgentFlowError):
 class AuthorizationError(AgentFlowError):
     """Raised when a user is not authorized."""
 
+
+class ConflictError(AgentFlowError):
+    """Raised when an operation conflicts with existing state."""
+
 class ValidationError(AgentFlowError):
     """Raised when application data fails validation."""

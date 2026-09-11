@@ -2,6 +2,7 @@
 
 import uuid
 
+from app.core.exceptions import ConflictError
 from app.services import document_service
 
 
@@ -21,6 +22,12 @@ class FakeRepo:
 
     def get_by_id(self, document_id, organization_id):
         return self.records.get(document_id)
+
+    def get_by_checksum(self, organization_id, checksum):
+        for row in self.records.values():
+            if row.get("organization_id") == organization_id and row.get("checksum") == checksum:
+                return row
+        return None
 
     def update(self, document_id, organization_id, fields):
         if document_id in self.records:
@@ -78,3 +85,80 @@ def test_upload_rejects_unsupported(monkeypatch):
     except Exception as exc:
         assert type(exc).__name__ == "ValidationError"
         assert not repo.created
+
+
+def test_upload_rejects_duplicate_checksum(monkeypatch):
+    """Re-uploading identical content to the same org is a friendly 409,
+    not an opaque 500 from the unique index."""
+    repo = FakeRepo()
+
+    def fake_upload(organization_id, document_id, filename, data, content_type="x"):
+        return f"organizations/{organization_id}/documents/{document_id}/{filename}"
+
+    monkeypatch.setattr(document_service, "DocumentRepository", lambda: repo)
+    monkeypatch.setattr(document_service.document_storage, "upload_document", fake_upload)
+    monkeypatch.setattr(
+        document_service.job_queue, "enqueue_document", lambda document_id: True
+    )
+
+    first = document_service.create_and_start_processing(
+        user_id="u",
+        organization_id="org-1",
+        filename="notes.txt",
+        content_type="text/plain",
+        data=b"same content",
+    )
+    assert first["status"] == "pending"
+
+    try:
+        document_service.create_and_start_processing(
+            user_id="u",
+            organization_id="org-1",
+            filename="notes-renamed.txt",
+            content_type="text/plain",
+            data=b"same content",
+        )
+        raise AssertionError("expected duplicate rejection")
+    except ConflictError:
+        pass
+
+    # A different organization may still upload the identical content.
+    second = document_service.create_and_start_processing(
+        user_id="u",
+        organization_id="org-2",
+        filename="notes.txt",
+        content_type="text/plain",
+        data=b"same content",
+    )
+    assert second["organization_id"] == "org-2"
+    assert len(repo.created) == 2
+
+
+def test_duplicate_race_maps_unique_violation_to_conflict(monkeypatch):
+    """If the pre-check misses a concurrent insert, the unique index raises
+    and must still surface as ConflictError, not a raw 500."""
+
+    class RaceRepo(FakeRepo):
+        def get_by_checksum(self, organization_id, checksum):
+            return None
+
+        def create(self, data):
+            raise RuntimeError(
+                "duplicate key value violates unique constraint "
+                '"documents_org_checksum_idx"'
+            )
+
+    repo = RaceRepo()
+    monkeypatch.setattr(document_service, "DocumentRepository", lambda: repo)
+
+    try:
+        document_service.create_and_start_processing(
+            user_id="u",
+            organization_id="org-1",
+            filename="notes.txt",
+            content_type="text/plain",
+            data=b"same content",
+        )
+        raise AssertionError("expected duplicate rejection")
+    except ConflictError:
+        pass
