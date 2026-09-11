@@ -128,7 +128,7 @@ def _fetch_membership_role(organization_id: str, user_id: str) -> str | None:
             .select("role")
             .eq("organization_id", organization_id)
             .eq("user_id", user_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
     except Exception:
@@ -138,9 +138,10 @@ def _fetch_membership_role(organization_id: str, user_id: str) -> str | None:
         return None
 
     data = response.data
-    if not data:
+    row = data[0] if data else None
+    if not row:
         return None
-    role = data.get("role")
+    role = row.get("role")
     return str(role) if role else None
 
 

@@ -1,4 +1,6 @@
 from typing import Any
+
+from app.db.repositories import first_row
 from app.db.supabase import get_supabase
 
 class UserRepository:
@@ -14,11 +16,11 @@ class UserRepository:
             client.table("profiles")
             .select("*")
             .eq("id", user_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
 
-        return response.data
+        return first_row(response.data)
 
     def update_profile(self, user_id: str, data: dict[str, Any] | None):
         client = get_supabase()
@@ -31,8 +33,7 @@ class UserRepository:
             .update(data)
             .eq("id", user_id)
             .select("*")
-            .maybe_single()
             .execute()
         )
 
-        return response.data
+        return first_row(response.data)

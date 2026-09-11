@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.db.repositories import first_row
 from app.db.supabase import get_supabase
 
 class DocumentRepository:
@@ -17,11 +18,10 @@ class DocumentRepository:
             client.table("documents")
             .insert(data)
             .select("*")
-            .single()
             .execute()
         )
 
-        return response.data
+        return first_row(response.data)
 
     def get_by_checksum(
         self,
@@ -40,11 +40,11 @@ class DocumentRepository:
             .select("*")
             .eq("organization_id", organization_id)
             .eq("checksum", checksum)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
 
-        return response.data
+        return first_row(response.data)
 
     def get_by_id(
         self,
@@ -61,11 +61,11 @@ class DocumentRepository:
             .select("*")
             .eq("id", document_id)
             .eq("organization_id", organization_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
 
-        return response.data
+        return first_row(response.data)
 
     def list_for_organization(
         self,
@@ -111,11 +111,10 @@ class DocumentRepository:
             .eq("id", document_id)
             .eq("organization_id", organization_id)
             .select("*")
-            .maybe_single()
             .execute()
         )
 
-        return response.data
+        return first_row(response.data)
 
     def create_chunk(
         self,
@@ -130,11 +129,10 @@ class DocumentRepository:
             client.table("document_chunks")
             .insert(data)
             .select("*")
-            .single()
             .execute()
         )
 
-        return response.data
+        return first_row(response.data)
 
     def list_chunks(
         self,
@@ -170,13 +168,13 @@ class DocumentRepository:
 
         response = (
             client.table("document_chunks")
-            .select("id", count="exact", head=True)
+            .select("id")
             .eq("document_id", document_id)
             .eq("organization_id", organization_id)
             .execute()
         )
 
-        return int(response.count or 0)
+        return len(response.data or [])
 
     def get_document(
         self,
@@ -193,11 +191,11 @@ class DocumentRepository:
             client.table("documents")
             .select("*")
             .eq("id", document_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
 
-        return response.data
+        return first_row(response.data)
 
     def update(
         self,
@@ -220,11 +218,10 @@ class DocumentRepository:
             .eq("id", document_id)
             .eq("organization_id", organization_id)
             .select("*")
-            .maybe_single()
             .execute()
         )
 
-        return response.data
+        return first_row(response.data)
 
     def delete_chunks(
         self,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from app.db.repositories import first_row
 from app.db.supabase import get_supabase
 
 
@@ -29,8 +30,8 @@ class ResearchRepository:
             "config": config or {},
             "graph_state": {},
         }
-        response = client.table("research_runs").insert(row).select("*").single().execute()
-        return response.data or row
+        response = client.table("research_runs").insert(row).select("*").execute()
+        return first_row(response.data) or row
 
     def get(self, research_id: str, organization_id: str) -> dict[str, Any] | None:
         client = get_supabase()
@@ -41,19 +42,19 @@ class ResearchRepository:
             .select("*")
             .eq("id", research_id)
             .eq("organization_id", organization_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return first_row(response.data)
 
     def get_any(self, research_id: str) -> dict[str, Any] | None:
         client = get_supabase()
         if client is None:
             return None
         response = (
-            client.table("research_runs").select("*").eq("id", research_id).maybe_single().execute()
+            client.table("research_runs").select("*").eq("id", research_id).limit(1).execute()
         )
-        return response.data
+        return first_row(response.data)
 
     def list_for_org(self, organization_id: str) -> list[dict[str, Any]]:
         client = get_supabase()
@@ -81,10 +82,9 @@ class ResearchRepository:
             .eq("id", research_id)
             .eq("organization_id", organization_id)
             .select("*")
-            .maybe_single()
             .execute()
         )
-        return response.data
+        return first_row(response.data)
 
     def set_status(self, research_id: str, organization_id: str, status: str, **extra) -> None:
         fields = {"status": status, **extra}

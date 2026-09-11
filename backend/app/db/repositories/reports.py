@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from app.db.repositories import first_row
 from app.db.supabase import get_supabase
 
 
@@ -35,8 +36,8 @@ class ReportRepository:
             "sections": sections or {},
             "status": "ready",
         }
-        response = client.table("reports").insert(row).select("*").single().execute()
-        return response.data or row
+        response = client.table("reports").insert(row).select("*").execute()
+        return first_row(response.data) or row
 
     def get(self, report_id: str, organization_id: str) -> dict[str, Any] | None:
         client = get_supabase()
@@ -47,10 +48,10 @@ class ReportRepository:
             .select("*")
             .eq("id", report_id)
             .eq("organization_id", organization_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return first_row(response.data)
 
     def list_for_org(self, organization_id: str) -> list[dict[str, Any]]:
         client = get_supabase()
@@ -82,8 +83,8 @@ class ReportRepository:
             return None
         row = dict(data)
         row.setdefault("id", str(uuid.uuid4()))
-        resp = client.table("report_sources").insert(row).select("*").single().execute()
-        return resp.data or row
+        resp = client.table("report_sources").insert(row).select("*").execute()
+        return first_row(resp.data) or row
 
     def list_sources(self, report_id: str) -> list[dict[str, Any]]:
         client = get_supabase()
@@ -115,8 +116,8 @@ class EvaluationRepository:
             "status": "running",
             "summary": {},
         }
-        resp = client.table("evaluation_runs").insert(row).select("*").single().execute()
-        return resp.data or row
+        resp = client.table("evaluation_runs").insert(row).select("*").execute()
+        return first_row(resp.data) or row
 
     def complete_run(self, run_id: str, summary: dict[str, Any]) -> dict[str, Any] | None:
         client = get_supabase()
@@ -133,10 +134,9 @@ class EvaluationRepository:
             )
             .eq("id", run_id)
             .select("*")
-            .single()
             .execute()
         )
-        return resp.data
+        return first_row(resp.data)
 
     def create_result(
         self, *, run_id: str, test_case: str, metric: str, score: float | None,
@@ -154,8 +154,8 @@ class EvaluationRepository:
             "actual": actual,
             "metadata": metadata or {},
         }
-        resp = client.table("evaluation_results").insert(row).select("*").single().execute()
-        return resp.data or row
+        resp = client.table("evaluation_results").insert(row).select("*").execute()
+        return first_row(resp.data) or row
 
     def list_results(self, run_id: str) -> list[dict[str, Any]]:
         client = get_supabase()
@@ -193,7 +193,7 @@ class EvaluationRepository:
             .select("*")
             .eq("id", run_id)
             .eq("organization_id", organization_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return resp.data
+        return first_row(resp.data)
