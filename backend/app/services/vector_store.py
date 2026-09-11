@@ -86,23 +86,72 @@ def _ensure_payload_indexes(client: QdrantClient) -> None:
         _payload_indexes_ready = True
 
 
+def _create_collection(client: QdrantClient, name: str) -> None:
+    client.create_collection(
+        collection_name=name,
+        vectors_config=qmodels.VectorParams(
+            size=settings.embedding_dimensions,
+            distance=DISTANCE,
+        ),
+    )
+    logger.info(
+        "Created Qdrant collection %s (dims=%s)", name, settings.embedding_dimensions
+    )
+
+
+def _collection_is_compatible(client: QdrantClient, name: str) -> bool:
+    """Whether the existing collection matches this app's vector layout:
+    a single UNNAMED dense vector of ``embedding_dimensions`` (Cosine).
+
+    Returns True when the shape cannot be inspected (introspection failures
+    must never trigger a destructive recreate)."""
+    try:
+        info = client.get_collection(name)
+        params = getattr(getattr(info, "config", None), "params", None)
+        vectors = getattr(params, "vectors", None)
+    except Exception:
+        logger.debug("Could not inspect collection %s config", name, exc_info=True)
+        return True
+
+    if vectors is None:
+        return True
+    if not isinstance(vectors, qmodels.VectorParams):
+        return False  # named-vector layout — our unnamed uploads would 400
+    if vectors.size != settings.embedding_dimensions:
+        return False
+    if vectors.distance != DISTANCE:
+        return False
+    return True
+
+
 def ensure_collection(client: Optional[QdrantClient] = None) -> None:
     """Create the collection if it does not exist (dimension = model),
-    and ensure the payload indexes required for tenant-scoped filtering."""
+    and ensure the payload indexes required for tenant-scoped filtering.
+
+    An existing collection with an INCOMPATIBLE vector layout (named
+    vectors, wrong dimension or distance) is unusable by this app — every
+    upsert/search fails ("Not existing vector name error") — so it is
+    dropped and recreated with a loud warning."""
+    global _payload_indexes_ready
+
     client = client or _client()
     name = settings.qdrant_collection
     collections = client.get_collections().collections
-    if not any(c.name == name for c in collections):
-        client.create_collection(
-            collection_name=name,
-            vectors_config=qmodels.VectorParams(
-                size=settings.embedding_dimensions,
-                distance=DISTANCE,
-            ),
+    exists = any(c.name == name for c in collections)
+
+    if not exists:
+        _create_collection(client, name)
+    elif not _collection_is_compatible(client, name):
+        logger.warning(
+            "Qdrant collection %s has an incompatible vector layout for this "
+            "app (single unnamed vector, dims=%s, cosine) — dropping and "
+            "recreating it. Re-process documents to repopulate vectors.",
+            name,
+            settings.embedding_dimensions,
         )
-        logger.info(
-            "Created Qdrant collection %s (dims=%s)", name, settings.embedding_dimensions
-        )
+        client.delete_collection(name)
+        _create_collection(client, name)
+        _payload_indexes_ready = False  # indexes dropped with the collection
 
     _ensure_payload_indexes(client)
 

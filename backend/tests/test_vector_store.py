@@ -14,13 +14,15 @@ def _reset_payload_index_flag(monkeypatch):
 class FakeClient:
     """Stand-in Qdrant client that records calls."""
 
-    def __init__(self, has_collection=False):
+    def __init__(self, has_collection=False, vector_config="compatible"):
         self.created = []
         self.created_indexes = []
+        self.deleted_collections = []
         self.upserted = []
         self.deleted_filters = []
         self.search_calls = []
         self.has_collection = has_collection
+        self.vector_config = vector_config
         self.fail_index_creation = False
 
     def get_collections(self):
@@ -38,14 +40,44 @@ class FakeClient:
         return resp
 
     def get_collection(self, name):
+        from app.core.config import settings
+
+        if self.vector_config == "named":
+            vectors = {
+                "default": qmodels.VectorParams(
+                    size=settings.embedding_dimensions,
+                    distance=qmodels.Distance.COSINE,
+                )
+            }
+        elif self.vector_config == "wrong-dims":
+            vectors = qmodels.VectorParams(size=7, distance=qmodels.Distance.COSINE)
+        else:  # "compatible"
+            vectors = qmodels.VectorParams(
+                size=settings.embedding_dimensions,
+                distance=qmodels.Distance.COSINE,
+            )
+
+        class _Params:
+            pass
+
+        class _Config:
+            pass
+
         class _Info:
             payload_schema = {}
 
+        _Info.config = _Config()
+        _Info.config.params = _Params()
+        _Info.config.params.vectors = vectors
         return _Info()
 
     def create_collection(self, **kwargs):
         self.created.append(kwargs)
         self.has_collection = True
+
+    def delete_collection(self, name):
+        self.deleted_collections.append(name)
+        self.has_collection = False
 
     def create_payload_index(self, **kwargs):
         if self.fail_index_creation:
@@ -181,6 +213,41 @@ def test_index_creation_failure_does_not_block_ingestion(monkeypatch):
 
     vector_store.ensure_collection()  # must not raise
     assert vector_store._payload_indexes_ready is False  # retried next time
+
+
+def test_named_vector_collection_is_recreated(monkeypatch):
+    """A pre-existing named-vector collection makes every unnamed upsert
+    fail with 400 'Not existing vector name error' — must be recreated."""
+    from app.core.config import settings
+
+    client = FakeClient(has_collection=True, vector_config="named")
+    monkeypatch.setattr(vector_store, "_client", lambda: client)
+
+    vector_store.ensure_collection()
+    assert client.deleted_collections == [settings.qdrant_collection]
+    assert len(client.created) == 1  # recreated with correct layout
+    assert [c["field_name"] for c in client.created_indexes] == [
+        "organization_id",
+        "document_id",
+    ]
+
+
+def test_wrong_dimension_collection_is_recreated(monkeypatch):
+    client = FakeClient(has_collection=True, vector_config="wrong-dims")
+    monkeypatch.setattr(vector_store, "_client", lambda: client)
+
+    vector_store.ensure_collection()
+    assert len(client.deleted_collections) == 1
+    assert len(client.created) == 1
+
+
+def test_compatible_collection_is_left_alone(monkeypatch):
+    client = FakeClient(has_collection=True, vector_config="compatible")
+    monkeypatch.setattr(vector_store, "_client", lambda: client)
+
+    vector_store.ensure_collection()
+    assert not client.deleted_collections
+    assert not client.created
 
 
 def test_search_can_require_org_never_unrestricted(monkeypatch):
