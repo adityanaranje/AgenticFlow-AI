@@ -40,12 +40,9 @@ def _existing_document_ids(document_ids: set[str], organization_id: str) -> set[
 
     client = get_supabase()
     if client is None:
-        # Can't verify — play it safe and drop all document references.
         return set()
 
     existing: set[str] = set()
-    # Supabase ``in_`` filter accepts a comma-separated list; batch to stay
-    # well within URL length limits for large citation sets.
     batch_size = 50
     id_list = list(document_ids)
     for start in range(0, len(id_list), batch_size):
@@ -62,6 +59,41 @@ def _existing_document_ids(document_ids: set[str], organization_id: str) -> set[
                 existing.add(str(row["id"]))
         except Exception:
             logger.warning("Failed to verify document_ids batch; skipping stale refs in this batch.")
+    return existing
+
+
+def _existing_chunk_ids(chunk_ids: set[str]) -> set[str]:
+    """Return the subset of *chunk_ids* that actually exist in the
+    ``document_chunks`` table.
+
+    The ``report_sources.chunk_id`` foreign key references
+    ``document_chunks.id``; if a chunk was deleted (e.g. a document was
+    reprocessed) between retrieval and report storage the insert would
+    violate ``report_sources_chunk_id_fkey``.
+    """
+    if not chunk_ids:
+        return set()
+
+    client = get_supabase()
+    if client is None:
+        return set()
+
+    existing: set[str] = set()
+    batch_size = 50
+    id_list = list(chunk_ids)
+    for start in range(0, len(id_list), batch_size):
+        batch = id_list[start : start + batch_size]
+        try:
+            resp = (
+                client.table("document_chunks")
+                .select("id")
+                .in_("id", batch)
+                .execute()
+            )
+            for row in (resp.data or []):
+                existing.add(str(row["id"]))
+        except Exception:
+            logger.warning("Failed to verify chunk_ids batch; skipping stale refs in this batch.")
     return existing
 
 
@@ -127,12 +159,19 @@ def store_report(state: ResearchState) -> dict[str, Any] | None:
     cited_doc_ids = {c.document_id for c in grounded if c.document_id}
     valid_doc_ids = _existing_document_ids(cited_doc_ids, state.organization_id)
 
+    # Validate that referenced chunk_ids actually exist in document_chunks.
+    # A chunk can be deleted when its parent document is reprocessed; the
+    # citation still carries the old chunk_id which would violate
+    # report_sources_chunk_id_fkey.
+    cited_chunk_ids = {c.chunk_id for c in grounded if c.chunk_id}
+    valid_chunk_ids = _existing_chunk_ids(cited_chunk_ids)
+
     source_rows = [
         {
             "report_id": report_id,
             "source_type": "internal",
             "document_id": citation.document_id if citation.document_id in valid_doc_ids else None,
-            "chunk_id": citation.chunk_id or None,
+            "chunk_id": citation.chunk_id if citation.chunk_id in valid_chunk_ids else None,
             "url": None,
             "title": citation.filename,
             "citation": citations.format_citation(
