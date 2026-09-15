@@ -6,9 +6,9 @@ reset the record and re-run the standard ingestion pipeline.
 """
 
 import pytest
-from fastapi import HTTPException
-
 from app.api import documents as documents_api
+from app.services import background, document_service
+from fastapi import HTTPException
 
 
 class FakeRepo:
@@ -47,7 +47,9 @@ def test_reprocess_resets_status_and_enqueues(monkeypatch, failed_doc):
     monkeypatch.setattr(documents_api, "DocumentRepository", lambda: repo)
     enqueued = []
     monkeypatch.setattr(
-        documents_api.job_queue, "enqueue_document", lambda doc_id: enqueued.append(doc_id) or True
+        document_service.job_queue,
+        "enqueue_document",
+        lambda doc_id: enqueued.append(doc_id) or True,
     )
 
     result = documents_api.reprocess_document(
@@ -61,10 +63,19 @@ def test_reprocess_resets_status_and_enqueues(monkeypatch, failed_doc):
     assert result["document"]["status"] == "pending"
 
 
-def test_reprocess_runs_inline_when_redis_absent(monkeypatch, failed_doc):
+def test_reprocess_schedules_background_processing_when_redis_absent(
+    monkeypatch, failed_doc
+):
+    """Without Redis the pipeline runs in the background pool, NOT inline.
+
+    Reprocessing a large document used to keep the HTTP request open for the
+    whole pipeline (parse + embeddings + Qdrant). The request must return
+    immediately with the record reset to ``pending``; the work continues in
+    the background and the client follows it by polling status.
+    """
     repo = FakeRepo(failed_doc)
     monkeypatch.setattr(documents_api, "DocumentRepository", lambda: repo)
-    monkeypatch.setattr(documents_api.job_queue, "enqueue_document", lambda _: False)
+    monkeypatch.setattr(document_service.job_queue, "enqueue_document", lambda _: False)
     processed = []
     import app.workers.document_worker as worker
 
@@ -76,8 +87,11 @@ def test_reprocess_runs_inline_when_redis_absent(monkeypatch, failed_doc):
         organization_id="org-A", document_id="doc-1", membership=None
     )
 
-    assert processed == ["doc-1"]
     assert result["queued"] is False
+    # Dispatched, not necessarily finished yet: the response is not blocked
+    # on the pipeline.
+    assert background.wait_idle(timeout=10)
+    assert processed == ["doc-1"]
 
 
 def test_reprocess_rejects_non_failed_document(monkeypatch, failed_doc):

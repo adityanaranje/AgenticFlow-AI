@@ -32,7 +32,10 @@ export default function RetryProcessingButton({
         `/organizations/${organizationId}/documents/${documentId}/reprocess`,
       );
       router.refresh();
-      // Keep the spinner until the refresh swaps the status UI in.
+      // Reprocessing is dispatched to the worker, so the request returns
+      // immediately: stop the spinner and let the page's processing watcher
+      // pick up the new status.
+      setRetrying(false);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Could not retry processing.",

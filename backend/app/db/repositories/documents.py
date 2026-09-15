@@ -3,6 +3,7 @@ from typing import Any
 from app.db.repositories import first_row
 from app.db.supabase import get_supabase
 
+
 class DocumentRepository:
     """Repository for document metadata."""
     def create(
@@ -133,6 +134,34 @@ class DocumentRepository:
         )
 
         return first_row(response.data)
+
+    def create_chunks(
+        self,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Insert a batch of chunk rows in one request.
+
+        Ingestion used to call :meth:`create_chunk` once per chunk, which
+        costs one HTTP round trip per chunk (a 400-chunk document spent
+        minutes waiting on sequential inserts). Bulk inserts keep the same
+        rows but pay the round trip once per batch.
+        """
+        if not rows:
+            return []
+
+        client = get_supabase()
+
+        if client is None:
+            return []
+
+        response = (
+            client.table("document_chunks")
+            .insert(rows)
+            .select("id")
+            .execute()
+        )
+
+        return response.data or []
 
     def list_chunks(
         self,

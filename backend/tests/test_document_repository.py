@@ -156,3 +156,29 @@ def test_chunk_helpers(monkeypatch):
     assert len(repo.list_chunks("doc-9", "org-1")) == 3
     repo.delete_chunks("doc-9", "org-1")
     assert repo.count_chunks("doc-9", "org-1") == 0
+
+
+def test_create_chunks_bulk_insert_round_trip(monkeypatch):
+    """Chunk rows are inserted in bulk (one request per batch, not per row)."""
+    repo, _ = _repo(monkeypatch)
+    rows = [
+        {
+            "id": f"chunk-{i}",
+            "document_id": "doc-bulk",
+            "organization_id": "org-1",
+            "chunk_index": i,
+            "content": f"chunk {i}",
+            "vector_point_id": f"chunk-{i}",
+        }
+        for i in range(5)
+    ]
+
+    inserted = repo.create_chunks(rows)
+    assert len(inserted) == 5
+    assert repo.count_chunks("doc-bulk", "org-1") == 5
+    assert [row["chunk_index"] for row in repo.list_chunks("doc-bulk", "org-1")] == list(
+        range(5)
+    )
+
+    # Empty batches are a no-op (never an empty INSERT).
+    assert repo.create_chunks([]) == []

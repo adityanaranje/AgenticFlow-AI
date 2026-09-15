@@ -21,14 +21,14 @@ researcher+ may upload, an admin+ may delete.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-
 from app.core.auth import Membership
 from app.core.exceptions import ConflictError, ValidationError
 from app.core.logging import get_logger
 from app.core.rbac import require_admin, require_researcher, require_viewer
 from app.db.repositories.documents import DocumentRepository
-from app.services import document_service, job_queue, retrieval
+from app.services import document_service, retrieval
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.concurrency import run_in_threadpool
 
 logger = get_logger(__name__)
 
@@ -38,6 +38,26 @@ router = APIRouter(
 )
 
 _NOT_FOUND = HTTPException(status_code=404, detail="Document not found.")
+
+# Uploads are read in 1 MiB slices: the declared limit is enforced while
+# reading, so an oversized file is rejected without materialising the whole
+# body as one Python bytes object.
+_READ_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_upload(file: UploadFile) -> bytes:
+    """Read an upload in chunks, raising as soon as the size limit is passed."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        piece = await file.read(_READ_CHUNK_BYTES)
+        if not piece:
+            break
+        total += len(piece)
+        # Raises the canonical ValidationError message for oversized files.
+        document_service.validate_file_size(total)
+        chunks.append(piece)
+    return b"".join(chunks)
 
 
 @router.post("/upload", status_code=201)
@@ -49,13 +69,18 @@ async def upload_document(
     """Upload a document and start (background) processing.
 
     Requires researcher+ (contributing action, mirrors RLS insert policy).
+
+    Everything below the read is blocking network I/O (Supabase Storage,
+    PostgREST, Redis), so it runs in the thread pool: a slow upload no longer
+    stalls the event loop — and every other request — while it waits.
     """
     filename = (file.filename or "").strip() or "document"
     content_type = file.content_type or "application/octet-stream"
-    data = await file.read()
+    data = await _read_upload(file)
 
     try:
-        record = document_service.create_and_start_processing(
+        record = await run_in_threadpool(
+            document_service.create_and_start_processing,
             user_id=membership.user.id,
             organization_id=organization_id,
             filename=filename,
@@ -164,25 +189,21 @@ def reprocess_document(
             detail="Only failed documents can be reprocessed.",
         )
 
-    repository.update(
+    reset = repository.update(
         document_id,
         organization_id,
         {"status": "pending", "processing_error": None},
     )
 
-    queued = job_queue.enqueue_document(document_id)
-    if not queued:
-        # Same dev fallback as upload: without Redis, run the pipeline
-        # inline so the document still gets processed.
-        from app.workers.document_worker import process_document
+    # Same dispatch as upload: Redis queue when available, otherwise the
+    # in-process background pool — never inline in the request.
+    queued = document_service.start_processing(document_id)
 
-        logger.info(
-            "Redis unavailable; reprocessing document %s inline.", document_id
-        )
-        process_document(document_id)
-
-    updated = repository.get_by_id(document_id, organization_id)
-    return {"document": updated or record, "queued": queued}
+    return {
+        "document": reset
+        or {**record, "status": "pending", "processing_error": None},
+        "queued": queued,
+    }
 
 
 @router.delete("/{document_id}")

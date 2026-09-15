@@ -92,19 +92,21 @@ def normalize_text(raw: str) -> str:
     text = unicodedata.normalize("NFC", raw)
     # Unify CRLF / CR to LF.
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Remove trailing whitespace on each line.
-    text = "\n".join(line.rstrip() for line in text.split("\n"))
-    # Collapse 3+ blank lines to a single blank line.
+    # Single pass over the lines: rstrip each one and collapse runs of blank
+    # lines to a single blank line. (Extracted text is often megabytes long,
+    # so it is split once instead of once per concern.)
     lines: list[str] = []
+    append = lines.append
     blank = 0
     for line in text.split("\n"):
-        if not line.strip():
+        stripped = line.rstrip()
+        if not stripped:
             blank += 1
             if blank > 1:
                 continue
         else:
             blank = 0
-        lines.append(line)
+        append(stripped)
     return "\n".join(lines).strip()
 
 

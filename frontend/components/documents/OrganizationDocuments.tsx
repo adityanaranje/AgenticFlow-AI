@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   CircleAlert,
@@ -61,6 +61,12 @@ function formatDate(iso: string): string {
   }).format(date);
 }
 
+// Poll cadence: quick while a document is being ingested so the status
+// flips as soon as ingestion finishes, slow when everything has settled so an
+// idle page is not hammering PostgREST.
+const POLL_ACTIVE_MS = 2000;
+const POLL_IDLE_MS = 30000;
+
 export default function OrganizationDocuments({
   organizationId,
   initialDocuments,
@@ -73,7 +79,9 @@ export default function OrganizationDocuments({
   const [documents, setDocuments] = useState<DocumentRow[]>(initialDocuments);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasActive = documents.some((d) =>
+    ["pending", "processing"].includes(d.status),
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -101,19 +109,25 @@ export default function OrganizationDocuments({
   }, [refresh]);
 
   useEffect(() => {
-    // Poll until nothing is processing, then back off. Simple interval keeps
-    // statuses fresh without manual refresh.
-    timer.current = setInterval(() => {
-      void poll();
-    }, 5000);
-    return () => {
-      if (timer.current) clearInterval(timer.current);
-    };
-  }, [poll]);
+    // Self-scheduling loop: refresh, wait for the current cadence, repeat.
+    // The effect re-runs when ingestion starts or finishes (``hasActive``),
+    // which is the only time the cadence changes.
+    const delay = hasActive ? POLL_ACTIVE_MS : POLL_IDLE_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
 
-  const hasActive = documents.some((d) =>
-    ["pending", "processing"].includes(d.status),
-  );
+    const tick = async () => {
+      await poll();
+      if (cancelled) return;
+      timer = setTimeout(() => void tick(), delay);
+    };
+
+    timer = setTimeout(() => void tick(), delay);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [poll, hasActive]);
 
   return (
     <div className="space-y-6">

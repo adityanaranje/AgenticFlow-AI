@@ -15,14 +15,15 @@ Storage paths are always derived server-side (never client-supplied).
 from __future__ import annotations
 
 import hashlib
+import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from app.core.config import settings
 from app.core.exceptions import ConflictError, ValidationError
 from app.core.logging import get_logger
 from app.db.repositories.documents import DocumentRepository
-from app.services import document_parser, document_storage
-from app.services import job_queue
+from app.services import background, document_parser, document_storage, job_queue
 
 logger = get_logger(__name__)
 
@@ -109,6 +110,52 @@ def _storage_payload(
     }
 
 
+def _discard_uploaded_object(
+    upload: Future,
+    organization_id: str,
+    document_id: str,
+    filename: str,
+) -> None:
+    """Best effort: delete stored bytes when the matching DB row was not
+    created (duplicate upload / DB error), so a failed request cannot leave
+    an orphaned object behind."""
+    try:
+        upload.result()
+    except Exception:
+        return  # the upload itself failed — nothing was stored
+    try:
+        document_storage.delete_document(organization_id, document_id, filename)
+    except Exception:
+        logger.warning(
+            "Could not remove the storage object for an abandoned upload "
+            "(org=%s doc=%s).",
+            organization_id,
+            document_id,
+            exc_info=True,
+        )
+
+
+def start_processing(document_id: str) -> bool:
+    """Hand a document to the worker queue, with a non-blocking fallback.
+
+    Returns ``True`` when the job was queued on Redis and ``False`` when it
+    was dispatched to the in-process background pool instead. Either way the
+    caller returns immediately: the HTTP request never waits for the
+    ingestion pipeline.
+    """
+    if job_queue.enqueue_document(document_id):
+        return True
+
+    from app.workers.document_worker import process_document
+
+    logger.info(
+        "Redis unavailable; processing document %s in the background pool.",
+        document_id,
+    )
+    background.submit(process_document, document_id)
+    return False
+
+
 def create_and_start_processing(
     *,
     user_id: str,
@@ -122,16 +169,18 @@ def create_and_start_processing(
     Steps:
       1. validate type + size
       2. reject duplicate content for the same organization (409 conflict)
-      3. create the document record (status ``pending``)
-      4. upload bytes to private storage under the server-derived path
-      5. enqueue the worker job (or process inline when Redis is absent)
+      3. create the document record (status ``pending``) and upload the bytes
+         to private storage **concurrently** — the storage path is derived
+         server-side, so neither call needs the other's result
+      4. enqueue the worker job (or process in the background when Redis is
+         absent)
 
-    Returns the (possibly updated) document record.
+    Returns the newly created document record (status ``pending``); callers
+    should not expect a terminal status here — processing happens in the
+    worker / background pool and is observed by polling the record.
     """
     validate_file_size(len(data))
     file_type = resolve_file_type(filename, content_type)
-
-    import uuid
 
     document_id = str(uuid.uuid4())
     checksum = compute_checksum(data)
@@ -171,41 +220,51 @@ def create_and_start_processing(
         }
     )
 
-    try:
-        record = repository.create(base)
-    except Exception as exc:
-        if _is_unique_violation(exc):
-            raise ConflictError(
-                "This exact file has already been uploaded to this organization."
-            ) from exc
-        raise
-    if record is None:
-        raise RuntimeError("Could not create the document record.")
+    mime = document_parser.EXTENSION_MIME[file_type]
 
-    try:
-        mime = document_parser.EXTENSION_MIME[file_type]
-        document_storage.upload_document(
-            organization_id, document_id, filename, data, content_type=mime
-        )
-    except Exception as exc:
-        logger.exception("Storage upload failed for document %s", document_id)
-        repository.update(
-            document_id,
+    # The record insert and the storage upload are independent (the storage
+    # path is derived from ids we already have), so they run together: the
+    # upload — usually the slowest call in this request — no longer waits for
+    # a database round trip, and vice versa. One extra thread is enough: the
+    # caller is already running in the API's thread pool, so ``create`` stays
+    # on this thread while the upload happens alongside it.
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload") as pool:
+        upload = pool.submit(
+            document_storage.upload_document,
             organization_id,
-            {"status": "failed", "processing_error": "Upload to storage failed."},
+            document_id,
+            filename,
+            data,
+            mime,
         )
-        raise RuntimeError("Could not store the uploaded file.") from exc
 
-    # Enqueue for background processing; fall back to inline in development
-    # when Redis is unavailable so the pipeline still works.
-    queued = job_queue.enqueue_document(document_id)
-    if not queued:
-        from app.workers.document_worker import process_document
+        try:
+            record = repository.create(base)
+        except Exception as exc:
+            _discard_uploaded_object(upload, organization_id, document_id, filename)
+            if _is_unique_violation(exc):
+                raise ConflictError(
+                    "This exact file has already been uploaded to this organization."
+                ) from exc
+            raise
+        if record is None:
+            _discard_uploaded_object(upload, organization_id, document_id, filename)
+            raise RuntimeError("Could not create the document record.")
 
-        logger.info(
-            "Redis unavailable; processing document %s inline.", document_id
-        )
-        process_document(document_id)
+        try:
+            upload.result()
+        except Exception as exc:
+            logger.exception("Storage upload failed for document %s", document_id)
+            repository.update(
+                document_id,
+                organization_id,
+                {"status": "failed", "processing_error": "Upload to storage failed."},
+            )
+            raise RuntimeError("Could not store the uploaded file.") from exc
 
-    final = repository.get_by_id(document_id, organization_id)
-    return final or record
+    # Hand off to the worker (Redis) or to the in-process background pool.
+    # Either way this returns immediately: upload latency is decoupled from
+    # ingestion latency, and the client follows progress by polling status.
+    start_processing(document_id)
+
+    return record

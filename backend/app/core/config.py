@@ -75,10 +75,48 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=1500, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=200, alias="CHUNK_OVERLAP")
 
+    # Ingestion throughput. Remote calls dominate ingestion time, so every
+    # stage that talks to Supabase / OpenAI / Qdrant is batched and run with
+    # a bounded amount of concurrency. All values are tunable per
+    # deployment; sane defaults keep a single document fast without
+    # exceeding provider rate limits.
+    #
+    # Embeddings: how many chunk texts go into one OpenAI request, and how
+    # many requests run at once. (text-embedding-3-* accepts up to 2048
+    # inputs per request; 256 keeps a request well under the token cap.)
+    embedding_batch_size: int = Field(default=256, alias="EMBEDDING_BATCH_SIZE")
+    embedding_concurrency: int = Field(default=4, alias="EMBEDDING_CONCURRENCY")
+    embedding_max_retries: int = Field(default=3, alias="EMBEDDING_MAX_RETRIES")
+
+    # Chunk rows: rows per ``document_chunks`` insert (one HTTP request per
+    # batch instead of one per chunk) and batches in flight.
+    chunk_insert_batch_size: int = Field(default=200, alias="CHUNK_INSERT_BATCH_SIZE")
+    chunk_insert_concurrency: int = Field(default=2, alias="CHUNK_INSERT_CONCURRENCY")
+
+    # Qdrant: points per upsert request (Qdrant recommends <= 100-200) and
+    # how many upsert requests run at once.
+    qdrant_upsert_batch_size: int = Field(default=128, alias="QDRANT_UPSERT_BATCH_SIZE")
+    qdrant_upsert_concurrency: int = Field(default=2, alias="QDRANT_UPSERT_CONCURRENCY")
+
     # Document worker / job queue
     document_job_queue: str = Field(
         default="agentflow:documents:jobs", alias="DOCUMENT_JOB_QUEUE"
     )
+    # Documents processed in parallel. One OCR-free ingestion job is
+    # I/O-bound (embeddings + remote writes), so a handful of concurrent
+    # documents keeps the queue draining when several files are uploaded.
+    document_worker_concurrency: int = Field(
+        default=4, alias="DOCUMENT_WORKER_CONCURRENCY"
+    )
+    # Idle BLPOP wait for the worker. Must stay below the Redis client's
+    # socket timeout (3s) so an empty queue returns ``None`` cleanly
+    # instead of raising a socket timeout on every poll.
+    document_worker_poll_seconds: int = Field(
+        default=2, alias="DOCUMENT_WORKER_POLL_SECONDS"
+    )
+    # When Redis is unavailable, processing falls back to an in-process
+    # thread pool so upload requests still return immediately.
+    inline_processing_workers: int = Field(default=2, alias="INLINE_PROCESSING_WORKERS")
 
     # Research worker / job queue
     research_job_queue: str = Field(

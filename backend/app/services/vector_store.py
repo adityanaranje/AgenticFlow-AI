@@ -15,18 +15,26 @@ membership before serving results.
 
 from __future__ import annotations
 
-from typing import Any, Optional
-
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qmodels
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any
 
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.rag.qdrant import get_qdrant_client
+from qdrant_client import QdrantClient
+from qdrant_client.http import models as qmodels
 
 logger = get_logger(__name__)
 
 DISTANCE = qmodels.Distance.COSINE
+
+# Serializes collection self-healing. Several ingestion threads (or a search
+# during an ingestion) may observe the same layout error; the lock plus the
+# generation counter below makes them recreate the collection once together
+# instead of once each.
+_layout_lock = threading.Lock()
+_layout_generation = 0
 
 
 def _client() -> QdrantClient:
@@ -138,7 +146,7 @@ def _recreate_incompatible_collection(client: QdrantClient) -> bool:
     payload indexes were rebuilt); False when the collection looks
     compatible — meaning an observed vector error is NOT fixable by a
     recreate and must surface to the caller."""
-    global _payload_indexes_ready
+    global _payload_indexes_ready, _layout_generation
 
     name = settings.qdrant_collection
     if _collection_is_compatible(client, name):
@@ -155,6 +163,7 @@ def _recreate_incompatible_collection(client: QdrantClient) -> bool:
     _create_collection(client, name)
     _payload_indexes_ready = False  # indexes dropped with the collection
     _ensure_payload_indexes(client)
+    _layout_generation += 1  # signals in-flight writers to retry, not rebuild
     return True
 
 
@@ -179,7 +188,7 @@ def _is_vector_layout_error(exc: BaseException) -> bool:
     return any(marker in text for marker in _LAYOUT_ERROR_MARKERS)
 
 
-def ensure_collection(client: Optional[QdrantClient] = None) -> None:
+def ensure_collection(client: QdrantClient | None = None) -> None:
     """Create the collection if it does not exist (dimension = model),
     and ensure the payload indexes required for tenant-scoped filtering.
 
@@ -202,29 +211,21 @@ def ensure_collection(client: Optional[QdrantClient] = None) -> None:
     _ensure_payload_indexes(client)
 
 
-def upsert_chunk_vectors(
-    points: list[dict[str, Any]],
-    client: Optional[QdrantClient] = None,
+def _upsert_batch(
+    client: QdrantClient,
+    batch: list[qmodels.PointStruct],
+    *,
+    generation: int,
 ) -> None:
-    """Upsert vectors.
+    """Upsert one batch, self-healing a collection rebuilt out-of-band.
 
-    ``points`` is a list of dicts with keys:
-        id (str uuid), vector (list[float]), and payload fields below.
+    ``generation`` is the collection-generation observed before the first
+    attempt: if another thread already rebuilt the collection while this
+    batch was in flight, the retry below simply re-issues the request
+    instead of dropping the collection a second time.
     """
-    if not points:
-        return
-    client = client or _client()
-    ensure_collection(client)
-    payload = [
-        qmodels.PointStruct(
-            id=point["id"],
-            vector=point["vector"],
-            payload=point["payload"],
-        )
-        for point in points
-    ]
     try:
-        client.upsert(collection_name=settings.qdrant_collection, points=payload)
+        client.upsert(collection_name=settings.qdrant_collection, points=batch)
         return
     except Exception as exc:
         if not _is_vector_layout_error(exc):
@@ -238,13 +239,82 @@ def upsert_chunk_vectors(
             settings.qdrant_collection,
             exc,
         )
-        if not _recreate_incompatible_collection(client):
-            raise  # collection looks compatible; recreate cannot fix this
-    client.upsert(collection_name=settings.qdrant_collection, points=payload)
+        with _layout_lock:
+            if generation == _layout_generation:
+                if not _recreate_incompatible_collection(client):
+                    raise  # collection looks compatible; recreate cannot fix this
+    client.upsert(collection_name=settings.qdrant_collection, points=batch)
+
+
+def upsert_chunk_vectors(
+    points: list[dict[str, Any]],
+    client: QdrantClient | None = None,
+    *,
+    batch_size: int | None = None,
+    concurrency: int | None = None,
+    ensure: bool = True,
+) -> None:
+    """Upsert vectors.
+
+    ``points`` is a list of dicts with keys:
+        id (str uuid), vector (list[float]), and payload fields below.
+
+    Points are written in batches of ``QDRANT_UPSERT_BATCH_SIZE`` with a
+    bounded number of requests in flight: one giant request per document
+    (hundreds of 1536-dim vectors, several MB of JSON) is slow to serialise
+    and to acknowledge, while one request per point is a network round trip
+    per chunk. Callers that already called :func:`ensure_collection` should
+    pass ``ensure=False`` to avoid re-listing the collections.
+    """
+    if not points:
+        return
+    client = client or _client()
+    if ensure:
+        ensure_collection(client)
+
+    payload = [
+        qmodels.PointStruct(
+            id=point["id"],
+            vector=point["vector"],
+            payload=point["payload"],
+        )
+        for point in points
+    ]
+
+    size = max(1, int(batch_size or settings.qdrant_upsert_batch_size))
+    batches = [payload[start : start + size] for start in range(0, len(payload), size)]
+    generation = _layout_generation
+
+    # A single batch (the common case for small documents) runs inline.
+    if len(batches) == 1:
+        _upsert_batch(client, batches[0], generation=generation)
+        return
+
+    workers = max(1, int(concurrency or settings.qdrant_upsert_concurrency))
+    futures: dict[Any, int] = {}
+    failed = False
+    pool = ThreadPoolExecutor(
+        max_workers=min(workers, len(batches)),
+        thread_name_prefix="qdrant-upsert",
+    )
+    try:
+        futures = {
+            pool.submit(_upsert_batch, client, batch, generation=generation): index
+            for index, batch in enumerate(batches)
+        }
+        for future in as_completed(futures):
+            future.result()
+    except BaseException:
+        failed = True
+        for future in futures:
+            future.cancel()
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=failed)
 
 
 def _document_filter(
-    organization_id: str, document_id: Optional[str] = None
+    organization_id: str, document_id: str | None = None
 ) -> qmodels.Filter:
     must: list[Any] = [
         qmodels.FieldCondition(
@@ -263,7 +333,7 @@ def _document_filter(
 def delete_document_vectors(
     organization_id: str,
     document_id: str,
-    client: Optional[QdrantClient] = None,
+    client: QdrantClient | None = None,
 ) -> None:
     """Remove every vector belonging to ``document_id`` within an org."""
     client = client or _client()
@@ -318,8 +388,8 @@ def search_vectors(
     organization_id: str,
     query_vector: list[float],
     top_k: int = 5,
-    filters: Optional[dict[str, Any]] = None,
-    client: Optional[QdrantClient] = None,
+    filters: dict[str, Any] | None = None,
+    client: QdrantClient | None = None,
 ) -> list[dict[str, Any]]:
     """Search vectors scoped to an organization.
 
@@ -349,6 +419,7 @@ def search_vectors(
                 qmodels.FieldCondition(key=key, match=qmodels.MatchValue(value=str(value)))
             )
 
+    generation = _layout_generation
     try:
         results = _execute_search(
             client,
@@ -366,8 +437,13 @@ def search_vectors(
             settings.qdrant_collection,
             exc,
         )
-        if not _recreate_incompatible_collection(client):
-            raise
+        with _layout_lock:
+            # Another thread may have rebuilt the collection already — then
+            # the retry below is all that is needed.
+            if generation == _layout_generation and not _recreate_incompatible_collection(
+                client
+            ):
+                raise
         results = _execute_search(
             client,
             collection_name=settings.qdrant_collection,

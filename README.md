@@ -148,6 +148,16 @@ npm install
 | `QDRANT_API_KEY`                  | backend    |    🔒    | **Never expose to the browser**           |
 | `QDRANT_COLLECTION`               | backend    |          | Default `agentflow_documents`             |
 | `REDIS_URL`                       | backend    |          | Default `redis://localhost:6379/0`        |
+| `EMBEDDING_BATCH_SIZE`            | backend    |          | Chunk texts per embedding request (default `256`) |
+| `EMBEDDING_CONCURRENCY`           | backend    |          | Embedding requests in flight (default `4`) |
+| `EMBEDDING_MAX_RETRIES`           | backend    |          | Retries for transient provider errors (default `3`) |
+| `CHUNK_INSERT_BATCH_SIZE`         | backend    |          | Chunk rows per bulk insert (default `200`) |
+| `CHUNK_INSERT_CONCURRENCY`        | backend    |          | Bulk inserts in flight (default `2`)      |
+| `QDRANT_UPSERT_BATCH_SIZE`        | backend    |          | Points per Qdrant upsert request (default `128`) |
+| `QDRANT_UPSERT_CONCURRENCY`       | backend    |          | Qdrant upserts in flight (default `2`)    |
+| `DOCUMENT_WORKER_CONCURRENCY`     | backend    |          | Documents processed in parallel (default `4`) |
+| `DOCUMENT_WORKER_POLL_SECONDS`    | backend    |          | Idle queue poll interval (default `2`)    |
+| `INLINE_PROCESSING_WORKERS`       | backend    |          | Threads for the no-Redis upload fallback (default `2`) |
 | `LANGFUSE_HOST`                   | backend    |    🔒    | Default `https://cloud.langfuse.com`      |
 | `LANGFUSE_PUBLIC_KEY`             | backend    |    🔒    | Backend-only                              |
 | `LANGFUSE_SECRET_KEY`             | backend    |    🔒    | **Never expose to the browser**           |
@@ -312,7 +322,42 @@ npm run lint
 npm run build
 ```
 
-## 9. Health endpoint
+## 9. Ingestion performance
+
+Uploading a document is fast because it is decoupled from ingestion: the
+`POST .../documents/upload` request validates the file, writes the record and
+the bytes, and hands the job to the document worker (or, when Redis is not
+configured, to an in-process background pool). It never runs the pipeline
+itself, so response time does not grow with document size. Clients follow
+progress by polling the document's `status` (`pending` → `processing` →
+`completed`/`failed`).
+
+Chunking is pure CPU and cheap (a 300-page, ~930 KB document chunks in a few
+milliseconds); ingestion wall-clock time is dominated by remote calls. Each
+stage is therefore batched and overlapped:
+
+| Stage            | How it is accelerated                                                     |
+| ---------------- | ------------------------------------------------------------------------- |
+| Embeddings       | `EMBEDDING_BATCH_SIZE` texts per request, `EMBEDDING_CONCURRENCY` requests in flight, transient errors retried with backoff |
+| Chunk rows (DB)  | `create_chunks` bulk insert, `CHUNK_INSERT_BATCH_SIZE` rows per request, `CHUNK_INSERT_CONCURRENCY` batches in flight |
+| Qdrant vectors   | `QDRANT_UPSERT_BATCH_SIZE` points per request, `QDRANT_UPSERT_CONCURRENCY` requests in flight |
+| DB + vector write| The two writes are independent and run at the same time; the pre-delete of previous chunks/vectors runs concurrently too |
+| Multiple uploads | `DOCUMENT_WORKER_CONCURRENCY` documents are consumed in parallel (each `document-worker` container; scale replicas too) |
+
+Measure a change without touching the real services:
+
+```bash
+python scripts/benchmark-ingestion.py --paragraphs 2000   # ~500 chunks
+```
+
+With simulated latencies (20 ms PostgREST, 300 ms embeddings, 150 ms Qdrant,
+120 ms storage) the same 500-chunk document went from **13.3 s / 504 insert
+requests / 8 embedding requests** to **1.2 s / 4 insert requests / 2 embedding
+requests**. Tune the knobs above per deployment — raise the batch sizes to
+save round trips, lower them (or the concurrency) if a provider rate-limits
+you.
+
+## 10. Health endpoint
 
 `GET /health` (also `GET /api/v1/health`) checks **OpenAI · Supabase ·
 Qdrant · Redis · Langfuse** without crashing when one is unavailable:
@@ -336,7 +381,7 @@ If any dependency is down or not configured the overall status becomes
 curl http://localhost:8000/health
 ```
 
-## 10. Database migrations
+## 11. Database migrations
 
 SQL migrations live in `database/migrations/` (extensions, profiles,
 organizations, documents, research, reports, evaluations, RLS, storage,
@@ -344,7 +389,7 @@ indexes). Apply them in a Supabase SQL editor or via `psql`, in filename
 order, then run `database/seed.sql` for development data (it intentionally
 inserts nothing today — users/orgs are created through the app).
 
-## 11. Phase 1 completion checklist
+## 12. Phase 1 completion checklist
 
 - [x] Backend starts successfully
 - [x] Frontend starts successfully
@@ -354,7 +399,7 @@ inserts nothing today — users/orgs are created through the app).
 - [x] Backend `pytest` passes
 - [x] No hard-coded secrets; `.env.example` files exist at root/backend/frontend
 
-## 12. Known limitations (Phase 1)
+## 13. Known limitations (Phase 1)
 
 - Health checks report `Not configured`/`down` until real credentials are
   supplied — there is no bundled local Supabase/Qdrant/Langfuse.
@@ -365,7 +410,7 @@ inserts nothing today — users/orgs are created through the app).
 - Qdrant collection creation, Redis cache keys and Langfuse tracing
   call-sites arrive with their consuming features in later phases.
 
-## 13. Next phase (Phase 2 — expected scope)
+## 14. Next phase (Phase 2 — expected scope)
 
 Multi-tenant foundation: organization CRUD, membership/roles, Supabase RLS
 aligned endpoints (`/api/v1/organizations`, `/api/v1/auth`), document upload

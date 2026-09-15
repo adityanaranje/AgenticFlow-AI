@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 import OrgHeader from "@/components/organizations/OrgHeader";
+import DocumentProcessingWatcher from "@/components/documents/DocumentProcessingWatcher";
 import RetryProcessingButton from "@/components/documents/RetryProcessingButton";
 import { canResearch } from "@/lib/organizations/rbac";
 import {
@@ -143,6 +144,8 @@ export default async function OrganizationDocumentDetailPage({
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
+      {/* Ingestion runs in the worker: keep this page fresh until it ends. */}
+      <DocumentProcessingWatcher status={document.status} />
       <OrgHeader
         organizations={allMemberships.map((m) => ({
           organization: m.organization,

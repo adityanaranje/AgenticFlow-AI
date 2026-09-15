@@ -4,9 +4,7 @@ External boundaries (Supabase DB, storage, OpenAI, Qdrant) are mocked; the
 orchestration, chunk linkage and status transitions are asserted for real.
 """
 
-import io
 
-from app.core.config import settings
 from app.services.document_parser import ParsedDocument, ParsedPage
 from app.workers import document_worker
 
@@ -41,6 +39,7 @@ class FakeVectorStore:
         self.upserts = []
         self.deletes = []
         self.ensured = 0
+        self.upsert_kwargs = []
 
     def ensure_collection(self, client=None):
         self.ensured += 1
@@ -48,8 +47,9 @@ class FakeVectorStore:
     def delete_document_vectors(self, organization_id, document_id):
         self.deletes.append((organization_id, document_id))
 
-    def upsert_chunk_vectors(self, points):
+    def upsert_chunk_vectors(self, points, client=None, **kwargs):
         self.upserts.append(points)
+        self.upsert_kwargs.append(kwargs)
 
 
 def _txt_parsed():

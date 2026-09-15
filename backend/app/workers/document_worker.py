@@ -7,33 +7,55 @@ Processes a single document end to end:
     3. extract text      -> parser (PDF / DOCX / TXT / MD)
     4. normalize text    -> parser normalizes before chunking
     5. split into chunks -> paragraph-aware recursive chunking
-    6. generate vectors  -> OpenAI embeddings
+    6. generate vectors  -> OpenAI embeddings (batched + concurrent)
     7. upsert to Qdrant  -> tenant-scoped payloads + DB chunk linkage
     8. update status     -> completed (or failed with a safe message)
+
+Ingestion is I/O bound: nearly all of the wall-clock time is spent waiting
+on Supabase Storage, the OpenAI embeddings API, PostgREST and Qdrant. The
+pipeline therefore overlaps those remote calls — embeddings are requested in
+large parallel batches, chunk rows are inserted in bulk, and vector points
+are upserted in parallel batches (the DB insert and the vector upsert run at
+the same time as well). Concurrency is bounded by settings so a single
+document cannot exhaust provider rate limits.
 
 Run the consumer directly::
 
     python -m app.workers.document_worker
 
 Jobs are pushed by the upload API onto a Redis list
-(:mod:`app.services.job_queue`).
+(:mod:`app.services.job_queue`) and consumed on
+``DOCUMENT_WORKER_CONCURRENCY`` threads, so several documents finish in the
+time one used to take.
 """
 
 from __future__ import annotations
 
+import threading
+import time
 import uuid
-from typing import Optional
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.observability import ingestion_span
 from app.db.repositories.documents import DocumentRepository
-from app.services import chunking, document_parser, document_storage, embeddings
-from app.services import job_queue, vector_store
+from app.services import (
+    chunking,
+    document_parser,
+    document_storage,
+    embeddings,
+    job_queue,
+    vector_store,
+)
 
 logger = get_logger(__name__)
 
-_EMBED_BATCH = 64
+# Kept for backwards compatibility (older callers/tests import it); the
+# effective value now comes from settings.embedding_batch_size.
+_EMBED_BATCH = settings.embedding_batch_size
 
 
 def _mark_failed(document_id: str, organization_id: str, message: str) -> None:
@@ -50,6 +72,90 @@ def _mark_failed(document_id: str, organization_id: str, message: str) -> None:
     logger.error("Document %s failed: %s", document_id, safe)
 
 
+def _batched(items: list[Any], size: int) -> Iterable[list[Any]]:
+    """Yield ``items`` in lists of at most ``size`` entries."""
+    step = max(1, size)
+    for start in range(0, len(items), step):
+        yield items[start : start + step]
+
+
+def _chunk_row(
+    *,
+    document_id: str,
+    organization_id: str,
+    chunk_id: str,
+    chunk: chunking.TextChunk,
+) -> dict[str, Any]:
+    """DB row for one chunk (id == Qdrant point id == vector_point_id)."""
+    return {
+        "id": chunk_id,
+        "document_id": document_id,
+        "organization_id": organization_id,
+        "chunk_index": chunk.chunk_index,
+        "content": chunk.content,
+        "page_number": chunk.page_number,
+        "metadata": chunk.metadata,
+        "vector_point_id": chunk_id,
+    }
+
+
+def _chunk_point(
+    *,
+    chunk: chunking.TextChunk,
+    vector: list[float],
+    chunk_id: str,
+    document_id: str,
+    organization_id: str,
+    filename: str,
+    file_type: str,
+) -> dict[str, Any]:
+    """Qdrant point for one chunk (tenant + document + chunk linkage)."""
+    return {
+        "id": chunk_id,
+        "vector": vector,
+        "payload": {
+            "organization_id": organization_id,
+            "document_id": document_id,
+            "document_chunk_id": chunk_id,
+            "filename": filename,
+            "chunk_index": chunk.chunk_index,
+            "page_number": chunk.page_number,
+            "file_type": file_type,
+            "content": chunk.content,
+            "char_count": chunk.char_count,
+            "token_estimate": chunk.token_estimate,
+            "metadata": chunk.metadata,
+        },
+    }
+
+
+def _insert_chunk_rows(
+    repository: DocumentRepository,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Persist chunk rows in bulk, in parallel batches.
+
+    Falls back to per-row inserts for repositories that do not implement the
+    bulk helper (e.g. lightweight test doubles), so behaviour is unchanged
+    where batching is unavailable.
+    """
+    bulk = getattr(repository, "create_chunks", None)
+    if not callable(bulk):
+        for row in rows:
+            repository.create_chunk(row)
+        return
+
+    batches = list(_batched(rows, settings.chunk_insert_batch_size))
+    if len(batches) == 1:
+        bulk(batches[0])
+        return
+
+    workers = max(1, min(settings.chunk_insert_concurrency, len(batches)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="chunk-insert") as pool:
+        for _ in pool.map(bulk, batches):
+            pass
+
+
 def process_document(document_id: str) -> dict:
     """Run the full ingestion pipeline for one document id."""
     repository = DocumentRepository()
@@ -61,6 +167,7 @@ def process_document(document_id: str) -> dict:
     organization_id = doc["organization_id"]
     filename = doc["filename"] or "document"
     file_type = doc["file_type"]
+    started = time.perf_counter()
 
     try:
         repository.update(
@@ -86,7 +193,9 @@ def process_document(document_id: str) -> dict:
             parsed = document_parser.parse_document(
                 raw_bytes, file_type=file_type, filename=filename
             )
-            if not parsed.pages or not parsed.full_text.strip():
+            # Cheap emptiness check: avoids materialising the whole document
+            # text (megabytes for large PDFs) just to look for content.
+            if not parsed.pages or not any(page.text.strip() for page in parsed.pages):
                 raise ValueError("No extractable text found in this document.")
 
         # 5. chunking
@@ -105,21 +214,51 @@ def process_document(document_id: str) -> dict:
             if not chunks:
                 raise ValueError("Document produced no usable chunks.")
 
-        # 6. embeddings
+        # 6. embeddings — one request per batch, several batches in flight.
         contents = [chunk.content for chunk in chunks]
-        vectors: list[list[float]] = []
-        for start in range(0, len(contents), _EMBED_BATCH):
-            batch = contents[start : start + _EMBED_BATCH]
-            with ingestion_span(
-                "document.embed",
-                metadata={
-                    "document_id": document_id,
-                    "batch_size": len(batch),
-                },
-            ):
-                vectors.extend(embeddings.embed_texts(batch))
+        with ingestion_span(
+            "document.embed",
+            metadata={
+                "document_id": document_id,
+                "chunk_count": len(contents),
+                "batch_size": settings.embedding_batch_size,
+                "concurrency": settings.embedding_concurrency,
+            },
+        ):
+            vectors = embeddings.embed_texts_batched(contents)
 
-        # 7. upsert vectors + persist chunk rows (DB chunk id == point id)
+        if len(vectors) != len(chunks):
+            raise RuntimeError(
+                f"Embedding count mismatch: {len(vectors)} vectors for "
+                f"{len(chunks)} chunks."
+            )
+
+        # 7. persist chunk rows + vectors. Chunk ids are generated locally so
+        #    the DB rows and the vector points are keyed by the same id and
+        #    both writes can run concurrently.
+        chunk_ids = [str(uuid.uuid4()) for _ in chunks]
+        rows = [
+            _chunk_row(
+                document_id=document_id,
+                organization_id=organization_id,
+                chunk_id=chunk_id,
+                chunk=chunk,
+            )
+            for chunk_id, chunk in zip(chunk_ids, chunks)
+        ]
+        points = [
+            _chunk_point(
+                chunk=chunk,
+                vector=vector,
+                chunk_id=chunk_id,
+                document_id=document_id,
+                organization_id=organization_id,
+                filename=filename,
+                file_type=file_type,
+            )
+            for chunk, vector, chunk_id in zip(chunks, vectors, chunk_ids)
+        ]
+
         with ingestion_span(
             "document.vector_upsert",
             metadata={
@@ -128,46 +267,33 @@ def process_document(document_id: str) -> dict:
             },
         ):
             vector_store.ensure_collection()
-            # Idempotent: drop prior chunk rows + vectors before re-inserting.
-            repository.delete_chunks(document_id, organization_id)
-            vector_store.delete_document_vectors(organization_id, document_id)
 
-            points = []
-            for chunk, vector in zip(chunks, vectors):
-                chunk_id = uuid.uuid4()
-                payload = {
-                    "organization_id": organization_id,
-                    "document_id": document_id,
-                    "document_chunk_id": str(chunk_id),
-                    "filename": filename,
-                    "chunk_index": chunk.chunk_index,
-                    "page_number": chunk.page_number,
-                    "file_type": file_type,
-                    "content": chunk.content,
-                    "char_count": chunk.char_count,
-                    "token_estimate": chunk.token_estimate,
-                    "metadata": chunk.metadata,
-                }
-                repository.create_chunk(
-                    {
-                        "id": str(chunk_id),
-                        "document_id": document_id,
-                        "organization_id": organization_id,
-                        "chunk_index": chunk.chunk_index,
-                        "content": chunk.content,
-                        "page_number": chunk.page_number,
-                        "metadata": chunk.metadata,
-                        "vector_point_id": str(chunk_id),
-                    }
+            # Idempotent: drop prior chunk rows + vectors before re-inserting.
+            # The two deletes are independent, so clear them concurrently.
+            with ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="ingest-cleanup"
+            ) as pool:
+                delete_chunks = pool.submit(
+                    repository.delete_chunks, document_id, organization_id
                 )
-                points.append(
-                    {
-                        "id": str(chunk_id),
-                        "vector": vector,
-                        "payload": payload,
-                    }
+                delete_vectors = pool.submit(
+                    vector_store.delete_document_vectors,
+                    organization_id,
+                    document_id,
                 )
-            vector_store.upsert_chunk_vectors(points)
+                delete_chunks.result()
+                delete_vectors.result()
+
+            # DB rows and vector points are independent: overlap them.
+            with ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="ingest-write"
+            ) as pool:
+                insert_future = pool.submit(_insert_chunk_rows, repository, rows)
+                upsert_future = pool.submit(
+                    vector_store.upsert_chunk_vectors, points, None, ensure=False
+                )
+                insert_future.result()
+                upsert_future.result()
 
         # 8. mark complete
         repository.update(
@@ -184,12 +310,17 @@ def process_document(document_id: str) -> dict:
             },
         )
         logger.info(
-            "Document %s processed: %d chunks, %d pages",
+            "Document %s processed: %d chunks, %d pages in %.2fs",
             document_id,
             len(chunks),
             parsed.page_count or 0,
+            time.perf_counter() - started,
         )
-        return {"status": "completed", "chunk_count": len(chunks)}
+        return {
+            "status": "completed",
+            "chunk_count": len(chunks),
+            "duration_seconds": round(time.perf_counter() - started, 3),
+        }
 
     except Exception as exc:
         logger.exception("Document processing failed for %s", document_id)
@@ -197,19 +328,76 @@ def process_document(document_id: str) -> dict:
         return {"status": "failed", "error": str(exc)}
 
 
-def run_worker(interval: Optional[int] = None) -> None:
-    """Blocking consumer loop. Polls Redis for jobs and processes them."""
-    wait = interval if interval is not None else 5
-    logger.info("Document worker started (queue=%s).", job_queue.QUEUE_NAME)
+def _pop_with_backoff(wait: int) -> str | None:
+    """Pop the next job, sleeping when the queue could not block.
 
+    With Redis configured the BLPOP itself blocks for ``wait`` seconds, so an
+    empty queue returns after that wait. Without Redis, ``pop_next`` returns
+    immediately — and a consumer loop that never blocks would spin at full
+    CPU on every thread, so back off explicitly.
+    """
+    started = time.monotonic()
+    document_id = job_queue.pop_next(timeout=wait)
+    if document_id is None and (time.monotonic() - started) < 0.1:
+        time.sleep(wait)
+    return document_id
+
+
+def _consume_forever(worker_id: int, wait: int) -> None:
+    """Pop and process jobs until the process is stopped."""
     while True:
-        document_id = job_queue.pop_next(timeout=wait)
+        document_id = _pop_with_backoff(wait)
         if not document_id:
             continue
         try:
             process_document(document_id)
         except Exception:
-            logger.exception("Unhandled worker error for document %s", document_id)
+            logger.exception(
+                "Unhandled worker error for document %s (thread %d)",
+                document_id,
+                worker_id,
+            )
+
+
+def run_worker(
+    interval: int | None = None, concurrency: int | None = None
+) -> None:
+    """Blocking consumer loop. Polls Redis for jobs and processes them.
+
+    ``concurrency`` documents are processed in parallel (embeddings and
+    remote writes are I/O-bound, so threads keep the queue moving). Jobs are
+    popped from the shared Redis list, which load-balances naturally.
+    """
+    wait = interval if interval is not None else settings.document_worker_poll_seconds
+    # A blocking BLPOP must return before the Redis client's socket read
+    # timeout (3s) fires, otherwise every idle poll raises a socket timeout.
+    wait = max(1, min(int(wait), 3))
+    workers = max(1, int(concurrency or settings.document_worker_concurrency))
+
+    logger.info(
+        "Document worker started (queue=%s, threads=%d, poll=%ss).",
+        job_queue.QUEUE_NAME,
+        workers,
+        wait,
+    )
+
+    threads = [
+        threading.Thread(
+            target=_consume_forever,
+            args=(index, wait),
+            name=f"document-worker-{index}",
+            daemon=True,
+        )
+        for index in range(workers)
+    ]
+    for thread in threads:
+        thread.start()
+
+    try:
+        for thread in threads:
+            thread.join()
+    except KeyboardInterrupt:  # pragma: no cover - interactive stop
+        logger.info("Document worker interrupted; shutting down.")
 
 
 def main() -> None:
