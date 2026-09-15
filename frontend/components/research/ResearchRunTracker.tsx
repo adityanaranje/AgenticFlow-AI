@@ -213,6 +213,8 @@ export default function ResearchRunTracker({
           const isLooping = iteration > 0;
           if (!isLooping) return null;
 
+          const isDone = run.status === "completed";
+
           // Indices of the two nodes involved in the loop
           const retrieverIdx = 2; // "Retrieving"
           const gapIdx = 4;       // "Gap check"
@@ -222,6 +224,11 @@ export default function ResearchRunTracker({
           const startX = gapIdx * (nodeW + connectorW) + nodeW / 2;
           // Right edge of the retriever node
           const endX = retrieverIdx * (nodeW + connectorW) + nodeW / 2;
+
+          const loopColor = isDone ? "text-emerald-500 dark:text-emerald-400" : "text-amber-400 dark:text-amber-500";
+          const badgeBorder = isDone ? "border-emerald-300 dark:border-emerald-500/40" : "border-amber-300 dark:border-amber-500/40";
+          const badgeBg = isDone ? "bg-emerald-50 dark:bg-emerald-500/10" : "bg-amber-50 dark:bg-amber-500/10";
+          const badgeText = isDone ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300";
 
           return (
             <div className="absolute left-0 right-0" style={{ top: 6, pointerEvents: "none" }}>
@@ -238,21 +245,25 @@ export default function ResearchRunTracker({
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="2.5"
-                  strokeDasharray="6 4"
-                  className="text-amber-400 dark:text-amber-500"
+                  strokeDasharray={isDone ? "none" : "6 4"}
+                  className={loopColor}
                 />
                 {/* Arrowhead at the retriever end */}
                 <polygon
                   points={`${endX - 5},52 ${endX},44 ${endX + 5},52`}
-                  className="fill-amber-400 dark:fill-amber-500"
+                  className={isDone ? "fill-emerald-500 dark:fill-emerald-400" : "fill-amber-400 dark:fill-amber-500"}
                 />
               </svg>
               {/* Iteration badge */}
               <div
-                className="absolute flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-[10px] font-bold text-amber-700 shadow-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300"
+                className={`absolute flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-bold shadow-sm ${badgeBorder} ${badgeBg} ${badgeText}`}
                 style={{ left: `calc(${((startX + endX) / 2) / ((PIPELINE_STEPS.length - 1) * (nodeW + connectorW) + nodeW) * 100}% - 28px)`, top: -2 }}
               >
-                <RotateCw className="h-3 w-3 animate-spin" aria-hidden="true" />
+                {isDone ? (
+                  <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+                ) : (
+                  <RotateCw className="h-3 w-3 animate-spin" aria-hidden="true" />
+                )}
                 Iteration {iteration}/{maxIter}
               </div>
             </div>
