@@ -46,7 +46,7 @@ from app.agents.nodes.synthesis import synthesis_node
 from app.agents.state import ResearchState, RetrievedChunk
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.core.observability import ingestion_span
+from app.core.observability import ingestion_span, start_trace
 from app.db.repositories.research import ResearchRepository
 from app.services import background, job_queue, report_service, retrieval
 
@@ -193,11 +193,21 @@ def run_research(research_id: str) -> dict[str, Any]:
     )
 
     try:
+        # Create a Langfuse trace so every span in this run appears as a
+        # proper tree in the Langfuse UI instead of orphaned top-level spans.
+        trace = start_trace(
+            "research.run",
+            metadata={"research_id": run["id"], "organization_id": organization_id},
+            user_id=run.get("user_id"),
+        )
+
         with ingestion_span(
-            "research.run", metadata={"research_id": run["id"], "organization_id": organization_id}
+            "research.run",
+            metadata={"research_id": run["id"], "organization_id": organization_id},
+            trace=trace,
         ):
             # ---- planner ----
-            with ingestion_span("research.planner", metadata={"research_id": run["id"]}):
+            with ingestion_span("research.planner", metadata={"research_id": run["id"]}, trace=trace):
                 state = planner_node(state, services)
             services.persist(state)
 
@@ -209,18 +219,18 @@ def run_research(research_id: str) -> dict[str, Any]:
                     _cancel(repo, run["id"], organization_id, state)
                     return {"status": "cancelled"}
 
-                with ingestion_span("research.retrieve", metadata={"research_id": run["id"], "queries": len(state.search_queries)}):
+                with ingestion_span("research.retrieve", metadata={"research_id": run["id"], "queries": len(state.search_queries)}, trace=trace):
                     state = retriever_node(state, services)
                 services.persist(state)
                 if services.is_cancelled():
                     _cancel(repo, run["id"], organization_id, state)
                     return {"status": "cancelled"}
 
-                with ingestion_span("research.evidence", metadata={"research_id": run["id"], "retrieved": len(state.retrieved)}):
+                with ingestion_span("research.evidence", metadata={"research_id": run["id"], "retrieved": len(state.retrieved)}, trace=trace):
                     state = evidence_analyzer_node(state, services)
                 services.persist(state)
 
-                with ingestion_span("research.gap", metadata={"research_id": run["id"], "iteration": iteration}):
+                with ingestion_span("research.gap", metadata={"research_id": run["id"], "iteration": iteration}, trace=trace):
                     state = gap_detector_node(state, services)
                 services.persist(state)
 
@@ -234,15 +244,15 @@ def run_research(research_id: str) -> dict[str, Any]:
                 return {"status": "cancelled"}
 
             # ---- synthesis / validation / finalize ----
-            with ingestion_span("research.synthesis", metadata={"research_id": run["id"]}):
+            with ingestion_span("research.synthesis", metadata={"research_id": run["id"]}, trace=trace):
                 state = synthesis_node(state, services)
             services.persist(state)
 
-            with ingestion_span("research.citations", metadata={"research_id": run["id"], "evidence": len(state.evidence)}):
+            with ingestion_span("research.citations", metadata={"research_id": run["id"], "evidence": len(state.evidence)}, trace=trace):
                 state = citation_validator_node(state, services)
             services.persist(state)
 
-            with ingestion_span("research.finalize", metadata={"research_id": run["id"]}):
+            with ingestion_span("research.finalize", metadata={"research_id": run["id"]}, trace=trace):
                 state = finalizer_node(state, services)
 
         # ---- store the report + sources ----
