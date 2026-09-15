@@ -7,12 +7,13 @@ Jobs are simple JSON messages pushed onto a Redis list; the worker
 from __future__ import annotations
 
 import json
-
-from redis.exceptions import TimeoutError as RedisTimeoutError
+import time
+from collections.abc import Callable
 
 from app.cache.redis_client import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 logger = get_logger(__name__)
 
@@ -51,6 +52,27 @@ def _pop(queue: str, timeout: int = 0) -> dict | None:
     except Exception:
         logger.exception("Failed to pop a job from %s", queue)
         return None
+
+
+def pop_with_backoff(
+    pop: Callable[..., str | None], timeout: int = 2
+) -> str | None:
+    """Pop the next job, sleeping when the underlying pop could not block.
+
+    With Redis configured the BLPOP itself waits ``timeout`` seconds, so an
+    empty queue returns after that wait. Without Redis, ``pop`` returns
+    immediately — and a consumer loop that never blocks would spin at full
+    CPU on every worker thread, so the wait is applied explicitly when the
+    call came back too fast to have blocked.
+
+    Keep ``timeout`` below the Redis client's socket read timeout (3s in
+    :mod:`app.cache.redis_client`) so an idle queue stays quiet.
+    """
+    started = time.monotonic()
+    job = pop(timeout=timeout)
+    if job is None and (time.monotonic() - started) < 0.1:
+        time.sleep(timeout)
+    return job
 
 
 def enqueue_document(document_id: str) -> bool:

@@ -10,16 +10,32 @@ Nodes:
 
 ``build_research_graph()`` additionally exposes the same nodes as a
 LangGraph ``StateGraph`` for environments that want the compiled graph.
+
+A run is a chain of dependent model calls, so its latency is bounded by how
+much of the independent work runs at once and how tight each provider call
+is:
+
+    - every open query is retrieved together: one embeddings request plus
+      concurrent vector searches, instead of one round trip per query;
+    - retrieved chunks are analysed in parallel batches that each fit the
+      model's context window;
+    - mid-run progress writes carry only the counters/queries the UI needs,
+      and cancellation checks read just the status column — neither pulls the
+      multi-megabyte full state over the wire after every node;
+    - ``RESEARCH_WORKER_CONCURRENCY`` runs execute in parallel, so several
+      research questions do not queue behind one another.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Optional
+import threading
+import time
+from datetime import UTC, datetime, timezone
+from typing import Any
 
 from app.agents import context as ctx_mod
 from app.agents import llm as llm_mod
-from app.agents import prompts  # noqa: F401  (prompt surface)
+from app.agents import prompts
 from app.agents.context import ResearchServices
 from app.agents.nodes.citation_validator import citation_validator_node
 from app.agents.nodes.evidence_analyzer import evidence_analyzer_node
@@ -33,7 +49,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.observability import ingestion_span
 from app.db.repositories.research import ResearchRepository
-from app.services import job_queue, report_service, retrieval
+from app.services import background, job_queue, report_service, retrieval
 
 logger = get_logger(__name__)
 
@@ -48,28 +64,43 @@ NODE_STATUS = {
 }
 
 
-def _default_retrieve(organization_id: str, query: str, top_k: int, filters=None) -> list[RetrievedChunk]:
+def _to_chunk(row: dict[str, Any]) -> RetrievedChunk:
+    """Map one retrieval row onto the agent's chunk type."""
+    return RetrievedChunk(
+        document_id=str(row.get("document_id") or ""),
+        chunk_id=str(row.get("chunk_id") or ""),
+        content=str(row.get("content") or ""),
+        filename=str(row.get("filename") or ""),
+        page_number=row.get("page_number"),
+        chunk_index=row.get("chunk_index"),
+        score=float(row.get("score") or 0.0),
+        metadata=dict(row.get("metadata") or {}),
+    )
+
+
+def _default_retrieve(
+    organization_id: str, query: str, top_k: int, filters=None
+) -> list[RetrievedChunk]:
     rows = retrieval.retrieve_context(
         organization_id=organization_id,
         query=query,
         top_k=top_k,
         filters=filters,
     )
-    chunks: list[RetrievedChunk] = []
-    for row in rows or []:
-        chunks.append(
-            RetrievedChunk(
-                document_id=str(row.get("document_id") or ""),
-                chunk_id=str(row.get("chunk_id") or ""),
-                content=str(row.get("content") or ""),
-                filename=str(row.get("filename") or ""),
-                page_number=row.get("page_number"),
-                chunk_index=row.get("chunk_index"),
-                score=float(row.get("score") or 0.0),
-                metadata=dict(row.get("metadata") or {}),
-            )
-        )
-    return chunks
+    return [_to_chunk(row) for row in rows or []]
+
+
+def _default_retrieve_many(
+    organization_id: str, queries: list[str], top_k: int, filters=None
+) -> list[list[RetrievedChunk]]:
+    """Batch retrieval: one embeddings request, then concurrent searches."""
+    rows_per_query = retrieval.retrieve_context_many(
+        organization_id=organization_id,
+        queries=list(queries),
+        top_k=top_k,
+        filters=filters,
+    )
+    return [[_to_chunk(row) for row in rows or []] for rows in rows_per_query]
 
 
 def _default_llm(messages: list[dict[str, str]]) -> str:
@@ -80,13 +111,16 @@ def _build_services(state: ResearchState, run_id: str, organization_id: str, rep
     """Services wired to the DB-backed persist/cancel for production runs."""
 
     def persist(s: ResearchState) -> None:
+        # Progress writes stay small: the full state (chunks, evidence,
+        # fragments of the report) can reach megabytes and is written once the
+        # run reaches a terminal status.
         try:
             repo.update(
                 run_id,
                 organization_id,
                 {
                     "status": s.status,
-                    "graph_state": s.to_jsonable(),
+                    "graph_state": s.to_progress_jsonable(),
                     "error": None,
                 },
             )
@@ -94,15 +128,17 @@ def _build_services(state: ResearchState, run_id: str, organization_id: str, rep
             logger.exception("Failed to persist research progress for %s", run_id)
 
     def is_cancelled() -> bool:
+        # Reads only the status column: fetching the whole row transferred the
+        # full graph_state several times per run just to compare one string.
         try:
-            run = repo.get_any(run_id)
-            return bool(run and run.get("status") == "cancelled")
+            return repo.get_status(run_id) == "cancelled"
         except Exception:
             return False
 
     services = ResearchServices(
         llm=_default_llm,
         retrieve=_default_retrieve,
+        retrieve_many=_default_retrieve_many,
         config=state.config,
     )
     services.persist = persist
@@ -110,8 +146,23 @@ def _build_services(state: ResearchState, run_id: str, organization_id: str, rep
     return services
 
 
+def _evaluate_report_safely(organization_id: str, report_id: str, run_id: str) -> None:
+    """Evaluate a stored report; never affects the research run itself."""
+    try:
+        from app.services.evaluation_service import evaluate_report
+
+        evaluate_report(
+            organization_id=organization_id,
+            report_id=report_id,
+            test_case=f"research:{run_id}",
+        )
+    except Exception:
+        logger.exception("Automatic evaluation failed for research %s", run_id)
+
+
 def run_research(research_id: str) -> dict[str, Any]:
     """Execute the full agentic research pipeline for one run id."""
+    started = time.perf_counter()
     repo = ResearchRepository()
     run = repo.get_any(research_id)
     if run is None:
@@ -133,7 +184,7 @@ def run_research(research_id: str) -> dict[str, Any]:
     services = _build_services(state, run["id"], organization_id, repo)
 
     repo.set_status(
-        run["id"], organization_id, "planning", started_at=datetime.now(timezone.utc).isoformat()
+        run["id"], organization_id, "planning", started_at=datetime.now(UTC).isoformat()
     )
 
     try:
@@ -194,40 +245,40 @@ def run_research(research_id: str) -> dict[str, Any]:
         if stored is None:
             raise RuntimeError("Report could not be stored.")
 
-        # Auto-evaluate the produced report (never modifies it). Failures here
-        # must not fail the research run.
-        try:
-            from app.services.evaluation_service import evaluate_report
-
-            evaluate_report(
-                organization_id=organization_id,
-                report_id=stored["id"],
-                test_case=f"research:{run['id']}",
-            )
-        except Exception:
-            logger.exception("Automatic evaluation failed for research %s", run["id"])
-
         repo.update(
             run["id"],
             organization_id,
             {
                 "status": "completed",
-                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "completed_at": datetime.now(UTC).isoformat(),
                 "error": None,
                 "graph_state": state.to_jsonable(),
             },
         )
         logger.info(
-            "Research %s completed (%d chunks, %d citations).",
+            "Research %s completed (%d chunks, %d citations) in %.2fs.",
             run["id"],
             len(state.retrieved),
             len(state.citations),
+            time.perf_counter() - started,
+        )
+
+        # Auto-evaluate the produced report (it never modifies the report).
+        # Scoring costs another model call, so it runs *after* the run is
+        # marked completed: the report is already available and the
+        # evaluation must not delay it. Failures never affect the run.
+        background.submit(
+            _evaluate_report_safely,
+            organization_id,
+            stored["id"],
+            run["id"],
         )
         return {"status": "completed", "report_id": stored.get("id")}
 
-    except Exception as exc:  # noqa: BLE001 - centralized safe handling
+    except Exception as exc:
         logger.exception("Research %s failed", run["id"])
         safe = (str(exc) or "Research failed.").strip().replace("\n", " ")[:1000]
+        state.status = "failed"  # keep the persisted state consistent with the row
         try:
             repo.update(
                 run["id"],
@@ -235,15 +286,19 @@ def run_research(research_id: str) -> dict[str, Any]:
                 {
                     "status": "failed",
                     "error": safe or "Research failed.",
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    # Terminal write: persist what was gathered so a failed
+                    # run is still inspectable (mid-run writes are summaries).
+                    "graph_state": state.to_jsonable(),
                 },
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Failed to record research failure for %s", run["id"])
         return {"status": "failed", "error": safe}
 
 
 def _cancel(repo, run_id, org, state) -> None:
+    state.status = "cancelled"  # keep the persisted state consistent with the row
     try:
         repo.update(
             run_id, org, {"status": "cancelled", "graph_state": state.to_jsonable()}
@@ -295,15 +350,59 @@ def build_research_graph():
     return builder.compile()
 
 
-def run_worker_loop(interval: Optional[int] = None) -> None:
-    """Blocking research worker consumer."""
-    wait = interval if interval is not None else 5
-    logger.info("Research worker started (queue=%s).", job_queue.RESEARCH_QUEUE)
+def _consume_forever(worker_id: int, wait: int) -> None:
+    """Pop and execute research runs until the process is stopped."""
     while True:
-        research_id = job_queue.pop_next_research(timeout=wait)
+        research_id = job_queue.pop_with_backoff(job_queue.pop_next_research, wait)
         if not research_id:
             continue
         try:
             run_research(research_id)
         except Exception:
-            logger.exception("Unhandled research worker error for %s", research_id)
+            logger.exception(
+                "Unhandled research worker error for %s (thread %d)",
+                research_id,
+                worker_id,
+            )
+
+
+def run_worker_loop(
+    interval: int | None = None, concurrency: int | None = None
+) -> None:
+    """Blocking research worker consumer.
+
+    ``concurrency`` runs execute in parallel (each is a chain of network-bound
+    model and vector calls), so a second question does not wait for the first
+    to finish. Jobs are popped from the shared Redis list, which
+    load-balances naturally.
+    """
+    wait = interval if interval is not None else settings.research_worker_poll_seconds
+    # A blocking BLPOP must return before the Redis client's socket read
+    # timeout (3s) fires, otherwise every idle poll raises a socket timeout.
+    wait = max(1, min(int(wait), 3))
+    workers = max(1, int(concurrency or settings.research_worker_concurrency))
+
+    logger.info(
+        "Research worker started (queue=%s, threads=%d, poll=%ss).",
+        job_queue.RESEARCH_QUEUE,
+        workers,
+        wait,
+    )
+
+    threads = [
+        threading.Thread(
+            target=_consume_forever,
+            args=(index, wait),
+            name=f"research-worker-{index}",
+            daemon=True,
+        )
+        for index in range(workers)
+    ]
+    for thread in threads:
+        thread.start()
+
+    try:
+        for thread in threads:
+            thread.join()
+    except KeyboardInterrupt:  # pragma: no cover - interactive stop
+        logger.info("Research worker interrupted; shutting down.")

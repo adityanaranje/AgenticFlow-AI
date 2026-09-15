@@ -14,26 +14,30 @@ runs a bounded number of them concurrently (see ``EMBEDDING_BATCH_SIZE`` /
 
 from __future__ import annotations
 
-import random
+import hashlib
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from app.cache.redis_client import get_redis_client
 from app.core.config import settings
 from app.core.exceptions import ConfigurationError
 from app.core.logging import get_logger
+from app.core.retry import call_with_retries, is_retryable_error
 from app.llm.client import get_openai_client
 
 logger = get_logger(__name__)
 
-# Provider-side hiccups that are safe to retry: rate limits, timeouts,
-# connection resets and 5xx responses. Everything else (bad request, auth,
-# quota exhausted) is raised immediately — retrying cannot fix it.
-_RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
-
 # Indirection so tests (and future async runtimes) can replace the sleeper
 # without patching the global ``time`` module.
 _sleep = time.sleep
+
+# Query embeddings are a pure function of (model, text), so caching them can
+# never return a stale answer — unlike cached retrieval results, which go
+# stale as soon as documents are uploaded. Research runs re-ask the same
+# question (and its sub-questions) across iterations and re-runs.
+_CACHE_PREFIX = "agentflow:embed:query:"
 
 
 def _client():
@@ -46,23 +50,8 @@ def _client():
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    """Whether ``exc`` looks like a transient provider error."""
-    if isinstance(exc, (TimeoutError, ConnectionError)):
-        return True
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and status in _RETRYABLE_STATUS_CODES:
-        return True
-    # openai SDK exception class names are stable across versions; matching
-    # on the name keeps this working with SDK builds whose module layout
-    # differs (and avoids importing a private error hierarchy).
-    name = type(exc).__name__
-    return name in {
-        "RateLimitError",
-        "APITimeoutError",
-        "APIConnectionError",
-        "InternalServerError",
-        "APIStatusError",
-    }
+    """Whether ``exc`` looks like a transient provider error (see core.retry)."""
+    return is_retryable_error(exc)
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
@@ -79,28 +68,29 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [list(item.embedding) for item in ordered]
 
 
+def _log_retry(batch_size: int):
+    """Build the ``on_retry`` logger for one embedding batch."""
+
+    def _on_retry(attempt: int, exc: BaseException, delay: float) -> None:
+        logger.warning(
+            "Embedding batch failed (attempt %d, %d texts): %s — retrying in %.1fs",
+            attempt,
+            batch_size,
+            exc,
+            delay,
+        )
+
+    return _on_retry
+
+
 def _embed_batch(texts: list[str], attempts: int) -> list[list[float]]:
     """Embed one batch, retrying transient failures with exponential backoff."""
-    last_error: BaseException | None = None
-    for attempt in range(1, max(1, attempts) + 1):
-        try:
-            return embed_texts(texts)
-        except Exception as exc:  # noqa: BLE001 - re-raised below when fatal
-            last_error = exc
-            if attempt >= attempts or not _is_retryable(exc):
-                raise
-            # Exponential backoff with jitter (0.5s, 1s, 2s, ... capped at 8s).
-            delay = min(8.0, 0.5 * (2 ** (attempt - 1))) * (0.5 + random.random())
-            logger.warning(
-                "Embedding batch failed (attempt %d/%d, %d texts): %s — retrying in %.1fs",
-                attempt,
-                attempts,
-                len(texts),
-                exc,
-                delay,
-            )
-            _sleep(delay)
-    raise last_error  # pragma: no cover - loop always returns or raises
+    return call_with_retries(
+        lambda: embed_texts(texts),
+        attempts=attempts,
+        sleep=_sleep,
+        on_retry=_log_retry(len(texts)),
+    )
 
 
 def embed_texts_batched(
@@ -157,10 +147,66 @@ def embed_texts_batched(
     return [vector for batch in results for vector in batch]
 
 
+def _cache_key(text: str) -> str:
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"{_CACHE_PREFIX}{settings.openai_embedding_model}:{digest}"
+
+
+def _cache_get(text: str) -> list[float] | None:
+    """Return a cached query vector, or ``None`` (best effort)."""
+    if not settings.embedding_cache_enabled:
+        return None
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(_cache_key(text))
+    except Exception:
+        logger.debug("Embedding cache read failed; ignoring.", exc_info=True)
+        return None
+    if not raw:
+        return None
+    try:
+        vector = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(vector, list) or not vector:
+        return None
+    return [float(value) for value in vector]
+
+
+def _cache_set(text: str, vector: list[float]) -> None:
+    """Store a query vector for later runs (best effort)."""
+    if not settings.embedding_cache_enabled or not vector:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.set(
+            _cache_key(text),
+            json.dumps([round(float(value), 8) for value in vector]),
+            ex=max(1, int(settings.embedding_cache_ttl_seconds)),
+        )
+    except Exception:
+        logger.debug("Embedding cache write failed; ignoring.", exc_info=True)
+
+
 def embed_query(query: str) -> list[float]:
-    """Embed a single query string (used for retrieval)."""
+    """Embed a single query string (used for retrieval).
+
+    Identical query text is served from the cache when Redis is configured:
+    a research run re-embeds its question and sub-questions on every
+    iteration and re-run, and the vector for a given text can never change.
+    """
+    cached = _cache_get(query)
+    if cached is not None:
+        return cached
+
     vectors = embed_texts([query])
-    return vectors[0]
+    vector = vectors[0]
+    _cache_set(query, vector)
+    return vector
 
 
 def embedding_dimension() -> int:

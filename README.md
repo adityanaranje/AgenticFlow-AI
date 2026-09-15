@@ -158,6 +158,16 @@ npm install
 | `DOCUMENT_WORKER_CONCURRENCY`     | backend    |          | Documents processed in parallel (default `4`) |
 | `DOCUMENT_WORKER_POLL_SECONDS`    | backend    |          | Idle queue poll interval (default `2`)    |
 | `INLINE_PROCESSING_WORKERS`       | backend    |          | Threads for the no-Redis upload fallback (default `2`) |
+| `OPENAI_TIMEOUT_SECONDS`          | backend    |          | Per-request model timeout (default `60`)  |
+| `RESEARCH_LLM_MAX_RETRIES`        | backend    |          | Retries for transient model errors (default `2`) |
+| `RETRIEVAL_CONCURRENCY`           | backend    |          | Queries retrieved in parallel (default `4`) |
+| `EVIDENCE_BATCH_CHARS`            | backend    |          | Excerpt characters per analysis call (default `60000`) |
+| `EVIDENCE_CONCURRENCY`            | backend    |          | Analysis calls in flight (default `4`)    |
+| `EVIDENCE_MAX_CHUNKS`             | backend    |          | Chunks analysed per run (default `48`)    |
+| `RESEARCH_WORKER_CONCURRENCY`     | backend    |          | Research runs in parallel (default `2`)   |
+| `RESEARCH_WORKER_POLL_SECONDS`    | backend    |          | Idle queue poll interval (default `2`)    |
+| `REPORT_SOURCE_BATCH_SIZE`        | backend    |          | Rows per report source insert (default `100`) |
+| `EMBEDDING_CACHE_TTL_SECONDS`     | backend    |          | TTL for cached query embeddings (default `3600`) |
 | `LANGFUSE_HOST`                   | backend    |    🔒    | Default `https://cloud.langfuse.com`      |
 | `LANGFUSE_PUBLIC_KEY`             | backend    |    🔒    | Backend-only                              |
 | `LANGFUSE_SECRET_KEY`             | backend    |    🔒    | **Never expose to the browser**           |
@@ -357,7 +367,45 @@ requests**. Tune the knobs above per deployment — raise the batch sizes to
 save round trips, lower them (or the concurrency) if a provider rate-limits
 you.
 
-## 10. Health endpoint
+## 10. Research performance
+
+A research run is a chain of *dependent* model calls (plan → retrieve →
+analyse → check gaps → …→ synthesise), so latency cannot be removed by
+throwing concurrency at the whole pipeline. What can be improved is the work
+that is independent, and how tightly each provider call is bounded:
+
+| Stage              | How it is accelerated                                                     |
+| ------------------ | ------------------------------------------------------------------------- |
+| Retrieval          | Every open query is resolved together: **one** embeddings request for all query texts, then `RETRIEVAL_CONCURRENCY` vector searches in parallel — instead of an embedding + search round trip per query |
+| Evidence analysis  | Chunks are map-reduced in parallel batches of `EVIDENCE_BATCH_CHARS`, capped at the `EVIDENCE_MAX_CHUNKS` highest-scoring chunks — a prompt can no longer exceed the model's context window (which previously made the whole run fail) |
+| Model calls        | `OPENAI_TIMEOUT_SECONDS` bounds each request (the SDK default is 600 s) and transient errors are retried with backoff (`RESEARCH_LLM_MAX_RETRIES`) |
+| Progress writes    | Mid-run `graph_state` writes carry status/counters/queries only; the full state (chunks, evidence, report) is written once when the run ends. Cancellation checks read only the `status` column |
+| Report storage     | Citation rows are inserted in bulk (`REPORT_SOURCE_BATCH_SIZE`) instead of one request per citation |
+| Repeat questions   | Query embeddings are cached (`EMBEDDING_CACHE_TTL_SECONDS`, `EMBEDDING_CACHE_ENABLED`) — a query vector is a pure function of its text, so the cache can never go stale |
+| Several questions  | `RESEARCH_WORKER_CONCURRENCY` runs execute in parallel per worker process |
+
+Measure it without touching the real services:
+
+```bash
+python scripts/benchmark-research.py                          # typical run
+python scripts/benchmark-research.py --subquestions 8         # 9 open queries
+python scripts/benchmark-research.py --chunks-per-query 150   # large corpus
+```
+
+With simulated latencies (2.5 s per model call, 300 ms per embeddings
+request, 100 ms per vector search, 20 ms per PostgREST round trip):
+
+| Scenario                        | Before                                   | After                        |
+| ------------------------------- | ---------------------------------------- | ---------------------------- |
+| 4 sub-questions, 5 chunks/query  | 12.3 s · 5 embeddings · 124 KB of progress writes | 10.8 s · 1 embedding · 24 KB |
+| 8 sub-questions (9 queries)      | 13.9 s · 9 embeddings · 9 searches serial | 10.9 s · 1 embedding · 9 searches parallel |
+| Large corpus (287 chunks)        | run **failed** (prompt exceeded the model window) | completed, citations produced |
+
+The remaining wall-clock time is the dependent model calls themselves; reduce
+`max_iterations`, `max_subquestions` or `top_k` per run (or use a faster chat
+model) to trade depth for latency.
+
+## 11. Health endpoint
 
 `GET /health` (also `GET /api/v1/health`) checks **OpenAI · Supabase ·
 Qdrant · Redis · Langfuse** without crashing when one is unavailable:
@@ -381,7 +429,7 @@ If any dependency is down or not configured the overall status becomes
 curl http://localhost:8000/health
 ```
 
-## 11. Database migrations
+## 12. Database migrations
 
 SQL migrations live in `database/migrations/` (extensions, profiles,
 organizations, documents, research, reports, evaluations, RLS, storage,
@@ -389,7 +437,7 @@ indexes). Apply them in a Supabase SQL editor or via `psql`, in filename
 order, then run `database/seed.sql` for development data (it intentionally
 inserts nothing today — users/orgs are created through the app).
 
-## 12. Phase 1 completion checklist
+## 13. Phase 1 completion checklist
 
 - [x] Backend starts successfully
 - [x] Frontend starts successfully
@@ -399,7 +447,7 @@ inserts nothing today — users/orgs are created through the app).
 - [x] Backend `pytest` passes
 - [x] No hard-coded secrets; `.env.example` files exist at root/backend/frontend
 
-## 13. Known limitations (Phase 1)
+## 14. Known limitations (Phase 1)
 
 - Health checks report `Not configured`/`down` until real credentials are
   supplied — there is no bundled local Supabase/Qdrant/Langfuse.
@@ -410,7 +458,7 @@ inserts nothing today — users/orgs are created through the app).
 - Qdrant collection creation, Redis cache keys and Langfuse tracing
   call-sites arrive with their consuming features in later phases.
 
-## 14. Next phase (Phase 2 — expected scope)
+## 15. Next phase (Phase 2 — expected scope)
 
 Multi-tenant foundation: organization CRUD, membership/roles, Supabase RLS
 aligned endpoints (`/api/v1/organizations`, `/api/v1/auth`), document upload

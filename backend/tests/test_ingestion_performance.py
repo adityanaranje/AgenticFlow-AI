@@ -618,7 +618,7 @@ def test_worker_backs_off_when_the_queue_cannot_block(monkeypatch):
     import app.services.job_queue as job_queue
 
     fake_time = _FakeTime()
-    monkeypatch.setattr(document_worker, "time", fake_time)
+    monkeypatch.setattr(job_queue, "time", fake_time)
     monkeypatch.setattr(job_queue, "pop_next", lambda timeout=0: None)
 
     assert document_worker._pop_with_backoff(2) is None
@@ -630,7 +630,7 @@ def test_worker_does_not_double_sleep_after_a_blocking_pop(monkeypatch):
     import app.services.job_queue as job_queue
 
     fake_time = _FakeTime(advance_per_call=2.0)  # the blocking wait elapsed
-    monkeypatch.setattr(document_worker, "time", fake_time)
+    monkeypatch.setattr(job_queue, "time", fake_time)
     monkeypatch.setattr(job_queue, "pop_next", lambda timeout=0: None)
 
     assert document_worker._pop_with_backoff(2) is None
@@ -641,7 +641,7 @@ def test_worker_returns_the_job_without_sleeping(monkeypatch):
     import app.services.job_queue as job_queue
 
     fake_time = _FakeTime()
-    monkeypatch.setattr(document_worker, "time", fake_time)
+    monkeypatch.setattr(job_queue, "time", fake_time)
     monkeypatch.setattr(job_queue, "pop_next", lambda timeout=0: "doc-9")
 
     assert document_worker._pop_with_backoff(2) == "doc-9"

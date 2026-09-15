@@ -36,8 +36,8 @@ class RetrievedChunk:
     chunk_id: str  # DB document_chunks.id == Qdrant vector point id
     content: str
     filename: str = ""
-    page_number: Optional[int] = None
-    chunk_index: Optional[int] = None
+    page_number: int | None = None
+    chunk_index: int | None = None
     score: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -53,8 +53,8 @@ class EvidenceItem:
     supporting_chunk: str  # verbatim chunk text supporting the claim
     confidence: float = 0.0
     filename: str = ""
-    page_number: Optional[int] = None
-    chunk_index: Optional[int] = None
+    page_number: int | None = None
+    chunk_index: int | None = None
 
 
 @dataclass
@@ -64,8 +64,8 @@ class Citation:
     document_id: str
     chunk_id: str
     filename: str
-    page_number: Optional[int] = None
-    chunk_index: Optional[int] = None
+    page_number: int | None = None
+    chunk_index: int | None = None
     citation_text: str = ""
     citation_label: str = ""
 
@@ -98,7 +98,7 @@ class ResearchState:
 
     sections: list[ReportSection] = field(default_factory=list)
     final_report: str = ""
-    confidence: Optional[float] = None
+    confidence: float | None = None
 
     status: str = "queued"
     errors: list[str] = field(default_factory=list)
@@ -158,6 +158,36 @@ class ResearchState:
             "final_report": (self.final_report or "")[:200_000],
             "confidence": self.confidence,
             "errors": self.errors[-20:],
+        }
+
+
+    def to_progress_jsonable(self) -> dict[str, Any]:
+        """Lightweight progress snapshot for mid-run ``graph_state`` writes.
+
+        :meth:`to_jsonable` carries the retrieved chunks, evidence excerpts
+        and the final report — up to a few megabytes — and it was written
+        after *every* node. During a run the only thing a client needs is the
+        status, the queries in flight and the counters, so the progress
+        payload keeps those and drops the bulk content. The full state is
+        still written when the run reaches a terminal status (completed,
+        cancelled or failed), so nothing is lost at rest.
+        """
+        return {
+            "research_id": self.research_id,
+            "organization_id": self.organization_id,
+            "user_id": self.user_id,
+            "original_query": self.original_query,
+            "status": self.status,
+            "iteration": self.iteration,
+            "sub_questions": self.sub_questions[:50],
+            "search_queries": self.search_queries[:100],
+            "gaps": self.gaps[:50],
+            "retrieved_count": len(self.retrieved),
+            "evidence_count": len(self.evidence),
+            "citations_count": len(self.citations),
+            "confidence": self.confidence,
+            "errors": self.errors[-20:],
+            "progress": True,
         }
 
 

@@ -329,18 +329,12 @@ def process_document(document_id: str) -> dict:
 
 
 def _pop_with_backoff(wait: int) -> str | None:
-    """Pop the next job, sleeping when the queue could not block.
+    """Pop the next job, backing off when the queue could not block.
 
-    With Redis configured the BLPOP itself blocks for ``wait`` seconds, so an
-    empty queue returns after that wait. Without Redis, ``pop_next`` returns
-    immediately — and a consumer loop that never blocks would spin at full
-    CPU on every thread, so back off explicitly.
+    See :func:`app.services.job_queue.pop_with_backoff` (shared with the
+    research worker).
     """
-    started = time.monotonic()
-    document_id = job_queue.pop_next(timeout=wait)
-    if document_id is None and (time.monotonic() - started) < 0.1:
-        time.sleep(wait)
-    return document_id
+    return job_queue.pop_with_backoff(job_queue.pop_next, wait)
 
 
 def _consume_forever(worker_id: int, wait: int) -> None:

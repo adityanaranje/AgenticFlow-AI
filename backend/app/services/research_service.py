@@ -1,33 +1,32 @@
 """Research run orchestration (Phase 5, §2/§18).
 
 Create a run, enqueue it onto Redis, return immediately. If Redis is
-unavailable we fall back to a daemon thread so the HTTP request still returns
-without blocking on a long-running model pipeline.
+unavailable the run is dispatched to the shared in-process background pool
+(:mod:`app.services.background`) — never executed inline — so the HTTP
+request returns without waiting for a long-running model pipeline and one
+burst of questions cannot spawn unbounded threads.
 """
 
 from __future__ import annotations
 
-import threading
 from typing import Any
 
 from app.core.logging import get_logger
 from app.db.repositories.research import ResearchRepository
-from app.services import job_queue
+from app.services import background, job_queue
 
 logger = get_logger(__name__)
 
 
+def _run_inline(research_id: str) -> None:
+    """Execute a research run in the background pool."""
+    from app.agents.research_graph import run_research
+
+    run_research(research_id)
+
+
 def _spawn_inline(research_id: str) -> None:
-    def _run() -> None:
-        try:
-            from app.agents.research_graph import run_research
-
-            run_research(research_id)
-        except Exception:
-            logger.exception("Inline research execution failed for %s", research_id)
-
-    thread = threading.Thread(target=_run, name=f"research-{research_id[:8]}", daemon=True)
-    thread.start()
+    background.submit(_run_inline, research_id)
 
 
 def create_research(
@@ -50,7 +49,10 @@ def create_research(
 
     research_id = run["id"]
     if not job_queue.enqueue_research(research_id):
-        logger.warning("Redis unavailable; running research %s inline.", research_id)
+        logger.info(
+            "Redis unavailable; running research %s in the background pool.",
+            research_id,
+        )
         _spawn_inline(research_id)
 
     return run

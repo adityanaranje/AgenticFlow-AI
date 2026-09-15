@@ -123,6 +123,48 @@ class Settings(BaseSettings):
         default="agentflow:research:jobs", alias="RESEARCH_JOB_QUEUE"
     )
 
+    # Research throughput. A run is a chain of dependent model calls, so the
+    # wins come from doing independent work at once (retrieval for every open
+    # query, evidence analysis over batches of chunks), from bounding each
+    # provider call, and from not rewriting the run's whole state to the
+    # database after every node.
+    #
+    # OpenAI per-request timeout, in seconds. The SDK default is 600s, which
+    # turns a single stalled connection into a ten-minute "research is slow".
+    openai_timeout_seconds: int = Field(default=60, alias="OPENAI_TIMEOUT_SECONDS")
+    # Retries for transient research model errors (rate limits / timeouts).
+    research_llm_max_retries: int = Field(
+        default=2, alias="RESEARCH_LLM_MAX_RETRIES"
+    )
+    # Queries retrieved concurrently: each is one embedding + one vector
+    # search, so the planner's sub-questions resolve together.
+    retrieval_concurrency: int = Field(default=4, alias="RETRIEVAL_CONCURRENCY")
+    # Evidence analysis is map-reduced over batches of retrieved chunks so a
+    # single prompt cannot exceed the model's context window (and so the
+    # batches can be analysed in parallel). The default keeps a typical run
+    # (5 queries x 5 chunks, ~35k characters) in ONE prompt — identical to the
+    # previous behaviour and cost — and only splits once the corpus of
+    # excerpts grows past what a model handles reliably.
+    evidence_batch_chars: int = Field(default=60000, alias="EVIDENCE_BATCH_CHARS")
+    evidence_concurrency: int = Field(default=4, alias="EVIDENCE_CONCURRENCY")
+    evidence_max_chunks: int = Field(default=48, alias="EVIDENCE_MAX_CHUNKS")
+    # Research runs processed in parallel per worker process.
+    research_worker_concurrency: int = Field(
+        default=2, alias="RESEARCH_WORKER_CONCURRENCY"
+    )
+    research_worker_poll_seconds: int = Field(
+        default=2, alias="RESEARCH_WORKER_POLL_SECONDS"
+    )
+    # Rows per ``report_sources`` insert, and bulk inserts for chunk rows /
+    # report sources in flight.
+    report_source_batch_size: int = Field(
+        default=100, alias="REPORT_SOURCE_BATCH_SIZE"
+    )
+    # Query-embedding cache (identical query text -> identical vector).
+    embedding_cache_ttl_seconds: int = Field(
+        default=3600, alias="EMBEDDING_CACHE_TTL_SECONDS"
+    )
+
     # Research agent tuning
     max_research_iterations: int = Field(
         default=3, alias="MAX_RESEARCH_ITERATIONS"

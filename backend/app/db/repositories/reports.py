@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 
 from app.db.repositories import first_row
@@ -86,6 +86,30 @@ class ReportRepository:
         resp = client.table("report_sources").insert(row).select("*").execute()
         return first_row(resp.data) or row
 
+    def create_sources(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Insert a batch of source rows in one request.
+
+        A report cites one source per grounded citation; inserting them one
+        at a time cost a round trip each (see DocumentRepository.create_chunks
+        for the same fix on document chunks).
+        """
+        if not rows:
+            return []
+
+        client = get_supabase()
+
+        if client is None:
+            return []
+
+        payload = []
+        for row in rows:
+            item = dict(row)
+            item.setdefault("id", str(uuid.uuid4()))
+            payload.append(item)
+
+        resp = client.table("report_sources").insert(payload).select("id").execute()
+        return resp.data or payload
+
     def list_sources(self, report_id: str) -> list[dict[str, Any]]:
         client = get_supabase()
         if client is None:
@@ -129,7 +153,7 @@ class EvaluationRepository:
                 {
                     "status": "completed",
                     "summary": summary,
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "completed_at": datetime.now(UTC).isoformat(),
                 }
             )
             .eq("id", run_id)

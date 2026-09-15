@@ -7,8 +7,9 @@ fakes and keeps dependency injection explicit (Phase 5, §26).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
 from app.agents.state import ResearchState, RetrievedChunk
 
@@ -21,14 +22,20 @@ class ResearchServices:
     llm: Callable[[list[dict[str, str]]], str]
     # tenant-scoped retrieval -> list of RetrievedChunk
     retrieve: Callable[
-        [str, str, int, Optional[dict]], list[RetrievedChunk]
+        [str, str, int, dict | None], list[RetrievedChunk]
     ]
     # read the research question / config without blocking
     config: dict = field(default_factory=dict)
+    # Optional batch retrieval: (org, queries, top_k, filters) -> one result
+    # list per query, in the same order. When provided, the retriever node
+    # resolves every open query with a single embeddings request plus
+    # concurrent vector searches, instead of one sequential round trip per
+    # query. ``None`` keeps the per-query path (tests, alternative callers).
+    retrieve_many: Callable[[str, list[str], int, dict | None], list[list[RetrievedChunk]]] | None = None
 
     def persist(self, state: ResearchState) -> None:
         """Hook the runner overrides to write progress to the DB."""
-        return None
+        return
 
     def is_cancelled(self) -> bool:
         return False

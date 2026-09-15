@@ -11,6 +11,9 @@ import {
   Sparkles,
 } from "lucide-react";
 
+// A run moves through several nodes; poll quickly while it is in flight.
+const POLL_ACTIVE_MS = 2500;
+
 export type RunView = {
   id: string;
   question: string;
@@ -62,10 +65,13 @@ export default function ResearchRunTracker({
   }, [organizationId, runId]);
 
   useEffect(() => {
+    // Poll while the run is in flight so each node's status shows up
+    // promptly; stop as soon as it settles (the run is finished, nothing else
+    // will change) so an open tab is not polling forever.
     let t: ReturnType<typeof setInterval> | null = null;
     const active = () => !["completed", "failed", "cancelled"].includes(run.status);
     if (active()) {
-      t = setInterval(() => void refresh(), 5000);
+      t = setInterval(() => void refresh(), POLL_ACTIVE_MS);
     }
     return () => {
       if (t) clearInterval(t);

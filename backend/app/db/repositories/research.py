@@ -56,6 +56,26 @@ class ResearchRepository:
         )
         return first_row(response.data)
 
+    def get_status(self, research_id: str) -> str | None:
+        """Read only the run's status column.
+
+        Cancellation checks run several times per research run; selecting the
+        whole row transferred the full ``graph_state`` (up to megabytes) each
+        time just to compare one string.
+        """
+        client = get_supabase()
+        if client is None:
+            return None
+        response = (
+            client.table("research_runs")
+            .select("status")
+            .eq("id", research_id)
+            .limit(1)
+            .execute()
+        )
+        row = first_row(response.data)
+        return (row or {}).get("status")
+
     def list_for_org(self, organization_id: str) -> list[dict[str, Any]]:
         client = get_supabase()
         if client is None:
