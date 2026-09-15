@@ -16,7 +16,7 @@ generate reports, and evaluate the quality of generated answers.
 | Layer         | Technology                                                                 |
 | ------------- | -------------------------------------------------------------------------- |
 | Frontend      | Next.js (App Router) · TypeScript · React · Supabase Auth · Supabase Storage |
-| Backend       | Python 3.11+ · FastAPI · LangChain · LangGraph · OpenAI                     |
+| Backend       | Python 3.10+ · FastAPI · LangChain · LangGraph · OpenAI                     |
 | Infrastructure| Supabase (PostgreSQL + Storage) · Qdrant · Redis · Langfuse                |
 | AI            | OpenAI models · Embeddings · RAG · Agentic research workflow (LangGraph)   |
 | Observability | Langfuse                                                                   |
@@ -77,7 +77,8 @@ agentflow-ai/
 
 ## 3. Prerequisites
 
-- Python **3.11+**
+- Python **3.10+** (3.11 and 3.12 also work: the code stays inside the 3.10
+  stdlib surface, and `python -m pytest` enforces that)
 - Node.js **20+** and npm **10+**
 - Docker + Docker Compose (optional, for the containerized stack)
 - Accounts / endpoints for the external services:
@@ -323,6 +324,11 @@ The suite covers:
   empty-by-default secrets
 - application startup/shutdown, CORS, router registration, and OpenAPI
   exposing no secrets
+- ingestion and research performance contracts (`test_ingestion_performance.py`,
+  `test_research_performance.py`): batched/parallel provider calls, bounded
+  prompts, progress-only mid-run writes and deterministic fallbacks
+- interpreter floor (`test_python_compat.py`): no 3.11+/3.12+ only API may enter
+  the shipped code, so the backend still runs on Python 3.10
 
 ### Frontend
 

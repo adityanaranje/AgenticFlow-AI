@@ -68,7 +68,9 @@ def retry_delay(
     return window * (0.5 + random.random())
 
 
-def call_with_retries(  # noqa: UP047 - PEP 695 generics need Python 3.12+
+# Kept in classic ``TypeVar`` form on purpose: PEP 695 generics are 3.12+ and the
+# backend floor is 3.10 (see pyproject ``target-version``).
+def call_with_retries(
     func: Callable[[], T],
     *,
     attempts: int = 3,

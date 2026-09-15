@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from app.db.repositories import first_row
@@ -153,7 +153,7 @@ class EvaluationRepository:
                 {
                     "status": "completed",
                     "summary": summary,
-                    "completed_at": datetime.now(UTC).isoformat(),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
             .eq("id", run_id)

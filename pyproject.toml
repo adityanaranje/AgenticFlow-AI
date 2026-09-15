@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "agentflow-ai"
 version = "0.1.0"
 description = "Production-oriented multi-agent AI research and knowledge intelligence platform"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 
 dependencies = [
     "fastapi>=0.115,<1.0",
@@ -53,9 +53,12 @@ asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+# Pinned to the oldest interpreter the backend must run on. Ruff only suggests
+# syntax/APIs available at this version, so it cannot propose 3.11+ only names
+# (e.g. `datetime.UTC` via UP017) that would crash on a 3.10 interpreter.
+target-version = "py310"
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.10"
 strict = false
 

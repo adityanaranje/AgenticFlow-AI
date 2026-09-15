@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from app.agents import context as ctx_mod
@@ -184,7 +184,7 @@ def run_research(research_id: str) -> dict[str, Any]:
     services = _build_services(state, run["id"], organization_id, repo)
 
     repo.set_status(
-        run["id"], organization_id, "planning", started_at=datetime.now(UTC).isoformat()
+        run["id"], organization_id, "planning", started_at=datetime.now(timezone.utc).isoformat()
     )
 
     try:
@@ -250,7 +250,7 @@ def run_research(research_id: str) -> dict[str, Any]:
             organization_id,
             {
                 "status": "completed",
-                "completed_at": datetime.now(UTC).isoformat(),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
                 "error": None,
                 "graph_state": state.to_jsonable(),
             },
@@ -286,7 +286,7 @@ def run_research(research_id: str) -> dict[str, Any]:
                 {
                     "status": "failed",
                     "error": safe or "Research failed.",
-                    "completed_at": datetime.now(UTC).isoformat(),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
                     # Terminal write: persist what was gathered so a failed
                     # run is still inspectable (mid-run writes are summaries).
                     "graph_state": state.to_jsonable(),
