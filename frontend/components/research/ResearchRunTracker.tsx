@@ -76,6 +76,7 @@ export type RunView = {
   started_at: string | null;
   completed_at: string | null;
   graph_state: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
 };
 
 const LABEL: Record<string, string> = {
@@ -108,7 +109,7 @@ export default function ResearchRunTracker({
     const supabase = createClient();
     const { data, error } = await supabase
       .from("research_runs")
-      .select("id, question, status, error, created_at, started_at, completed_at, graph_state")
+      .select("id, question, status, error, created_at, started_at, completed_at, graph_state, config")
       .eq("id", runId)
       .eq("organization_id", organizationId)
       .maybeSingle();
@@ -202,12 +203,71 @@ export default function ResearchRunTracker({
       </section>
 
       {/* Pipeline progress graph */}
-      <section className="card p-6 overflow-x-auto">
+      <section className="card p-6 overflow-x-auto relative">
         <h2 className="sr-only">Research pipeline</h2>
-        <div className="flex items-start gap-0 min-w-max">
+
+        {/* Iteration loop indicator */}
+        {(() => {
+          const iteration = Number(gs.iteration ?? 0);
+          const maxIter = Number(run.config?.max_iterations ?? 3);
+          const isLooping = iteration > 0;
+          if (!isLooping) return null;
+
+          // Indices of the two nodes involved in the loop
+          const retrieverIdx = 2; // "Retrieving"
+          const gapIdx = 4;       // "Gap check"
+          const nodeW = 72;
+          const connectorW = 36;
+          // Left edge of the gap-check node
+          const startX = gapIdx * (nodeW + connectorW) + nodeW / 2;
+          // Right edge of the retriever node
+          const endX = retrieverIdx * (nodeW + connectorW) + nodeW / 2;
+
+          return (
+            <div className="absolute left-0 right-0" style={{ top: 6, pointerEvents: "none" }}>
+              <svg
+                width="100%"
+                height="56"
+                viewBox={`0 0 ${(PIPELINE_STEPS.length - 1) * (nodeW + connectorW) + nodeW} 56`}
+                preserveAspectRatio="xMinYMin meet"
+                className="overflow-visible"
+              >
+                {/* Curved arrow from gap-check back to retriever */}
+                <path
+                  d={`M ${startX} 48 C ${startX} 8, ${endX} 8, ${endX} 48`}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeDasharray="6 4"
+                  className="text-amber-400 dark:text-amber-500"
+                />
+                {/* Arrowhead at the retriever end */}
+                <polygon
+                  points={`${endX - 5},52 ${endX},44 ${endX + 5},52`}
+                  className="fill-amber-400 dark:fill-amber-500"
+                />
+              </svg>
+              {/* Iteration badge */}
+              <div
+                className="absolute flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-[10px] font-bold text-amber-700 shadow-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300"
+                style={{ left: `calc(${((startX + endX) / 2) / ((PIPELINE_STEPS.length - 1) * (nodeW + connectorW) + nodeW) * 100}% - 28px)`, top: -2 }}
+              >
+                <RotateCw className="h-3 w-3 animate-spin" aria-hidden="true" />
+                Iteration {iteration}/{maxIter}
+              </div>
+            </div>
+          );
+        })()}
+
+        <div className="flex items-start gap-0 min-w-max" style={{ paddingTop: Number(gs.iteration ?? 0) > 0 ? 40 : 0 }}>
           {PIPELINE_STEPS.map((step, i) => {
             const state = stepState(step.key, run.status, run.graph_state);
             const isLast = i === PIPELINE_STEPS.length - 1;
+            const iteration = Number(gs.iteration ?? 0);
+            // When looping (iteration > 0), mark retriever/analyzing/gap-check
+            // as "on a repeat" so they get a slightly different treatment.
+            const isRepeating = iteration > 0 && ["retrieving", "analyzing", "checking_gaps"].includes(step.key);
+
             return (
               <div key={step.key} className="flex items-start">
                 {/* Node */}
@@ -217,7 +277,8 @@ export default function ResearchRunTracker({
                       flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold
                       transition-colors duration-300
                       ${state === "done" ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/20" : ""}
-                      ${state === "active" ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/30 ring-4 ring-indigo-500/20" : ""}
+                      ${state === "active" && !isRepeating ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/30 ring-4 ring-indigo-500/20" : ""}
+                      ${state === "active" && isRepeating ? "bg-amber-500 text-white shadow-lg shadow-amber-500/30 ring-4 ring-amber-500/20" : ""}
                       ${state === "upcoming" ? "border-2 border-zinc-200 bg-white text-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-500" : ""}
                       ${state === "failed" ? "bg-rose-500 text-white shadow-md shadow-rose-500/20" : ""}
                     `}
@@ -235,7 +296,8 @@ export default function ResearchRunTracker({
                   <p
                     className={`mt-2 text-center text-[11px] font-semibold leading-tight
                       ${state === "done" ? "text-emerald-600 dark:text-emerald-400" : ""}
-                      ${state === "active" ? "text-indigo-600 dark:text-indigo-400" : ""}
+                      ${state === "active" && !isRepeating ? "text-indigo-600 dark:text-indigo-400" : ""}
+                      ${state === "active" && isRepeating ? "text-amber-600 dark:text-amber-400" : ""}
                       ${state === "upcoming" ? "text-zinc-400 dark:text-zinc-500" : ""}
                       ${state === "failed" ? "text-rose-600 dark:text-rose-400" : ""}
                     `}

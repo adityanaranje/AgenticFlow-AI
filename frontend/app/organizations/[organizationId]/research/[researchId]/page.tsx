@@ -24,7 +24,7 @@ export default async function ResearchDetailPage({
 
   const { data: run } = await supabase
     .from("research_runs")
-    .select("id, question, status, error, created_at, started_at, completed_at, graph_state")
+    .select("id, question, status, error, created_at, started_at, completed_at, graph_state, config")
     .eq("id", researchId)
     .eq("organization_id", organization.id)
     .maybeSingle();
