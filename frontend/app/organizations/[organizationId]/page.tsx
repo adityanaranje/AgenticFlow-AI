@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import {
+  BarChart3,
   FileSearch,
   FileText,
   FolderOpen,
@@ -60,7 +61,7 @@ export default async function OrganizationPage({
 
   const role = membership.role as OrganizationRole;
 
-  const [docCount, researchCount, reportCount, memberRows] = await Promise.all([
+  const [docCount, researchCount, reportCount, evalCount, memberRows] = await Promise.all([
     supabase
       .from("documents")
       .select("id", { count: "exact", head: true })
@@ -71,6 +72,10 @@ export default async function OrganizationPage({
       .eq("organization_id", organization.id),
     supabase
       .from("reports")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", organization.id),
+    supabase
+      .from("evaluation_runs")
       .select("id", { count: "exact", head: true })
       .eq("organization_id", organization.id),
     supabase
@@ -113,6 +118,13 @@ export default async function OrganizationPage({
       count: reportCount.count ?? 0,
       description: "Generated, cited reports.",
       href: `/organizations/${organization.id}/reports`,
+    },
+    {
+      icon: BarChart3,
+      title: "Evaluations",
+      count: evalCount.count ?? 0,
+      description: "Quality metrics for reports.",
+      href: `/organizations/${organization.id}/evaluations`,
     },
   ];
 
@@ -208,7 +220,7 @@ export default async function OrganizationPage({
             <FolderOpen className="h-5 w-5 text-indigo-500" aria-hidden="true" />
             Organization workspace
           </h2>
-          <div className="grid gap-5 sm:grid-cols-3">
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
             {workspaceCards.map(({ icon: Icon, title, count, description, href }) => {
               const inner = (
                 <span className="card block p-6 transition hover:-translate-y-0.5 hover:shadow-md hover:shadow-zinc-900/5 dark:hover:shadow-black/30">

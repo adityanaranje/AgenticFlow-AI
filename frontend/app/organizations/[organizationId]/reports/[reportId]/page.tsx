@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowLeft, BookOpenText, FileText, Link2 } from "lucide-react";
+import { ArrowLeft, BarChart3, BookOpenText, FileText, Link2 } from "lucide-react";
 
 import OrgHeader from "@/components/organizations/OrgHeader";
+import EvaluateButton from "@/components/evaluations/EvaluateButton";
+import EvaluationMetrics from "@/components/evaluations/EvaluationMetrics";
 import { getUserOrganizations, requireOrganizationMembership } from "@/lib/organizations/server";
+import type { OrganizationRole } from "@/lib/organizations/types";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +27,7 @@ export default async function ReportDetailPage({
   params: Promise<{ organizationId: string; reportId: string }>;
 }) {
   const { organizationId, reportId } = await params;
-  const { organization } = await requireOrganizationMembership(organizationId);
+  const { organization, membership } = await requireOrganizationMembership(organizationId);
   const [allMemberships, supabase] = await Promise.all([getUserOrganizations(), createClient()]);
 
   const orgPath = `/organizations/${organization.id}`;
@@ -44,6 +47,26 @@ export default async function ReportDetailPage({
       .order("created_at", { ascending: true });
     sources = (data ?? []) as SourceRow[];
   }
+
+  // Fetch latest evaluation for this report
+  let latestEval: { id: string; status: string; summary: Record<string, unknown> | null } | null = null;
+  if (report) {
+    const { data: evalData } = await supabase
+      .from("evaluation_runs")
+      .select("id, status, summary")
+      .eq("report_id", reportId)
+      .eq("organization_id", organization.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    latestEval = evalData;
+  }
+
+  const role = membership.role as OrganizationRole;
+  const canEvaluate = ["owner", "admin", "researcher"].includes(role);
+  const evalMetrics = latestEval
+    ? ((latestEval.summary as { metrics?: Record<string, number> })?.metrics ?? null)
+    : null;
 
   const sections = (report?.sections ?? {}) as Record<string, string>;
   const sectionEntries = sections && Object.keys(sections).length > 0
@@ -83,6 +106,44 @@ export default async function ReportDetailPage({
                 </span>
               )}
             </header>
+
+            {/* Evaluation section */}
+            <section className="card p-6">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900 dark:text-white">
+                    <BarChart3 className="h-5 w-5 text-indigo-500" aria-hidden="true" />
+                    Evaluation
+                  </h2>
+                  <p className="mt-1 text-xs text-zinc-400">
+                    Measure citation quality, groundedness and relevance.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {latestEval && (
+                    <Link
+                      href={`/organizations/${organization.id}/evaluations/${latestEval.id}`}
+                      className="text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+                    >
+                      View full evaluation →
+                    </Link>
+                  )}
+                  {canEvaluate && (
+                    <EvaluateButton organizationId={organization.id} reportId={report.id} />
+                  )}
+                </div>
+              </div>
+              {evalMetrics && (
+                <div className="mt-5">
+                  <EvaluationMetrics metrics={evalMetrics} compact />
+                </div>
+              )}
+              {!evalMetrics && (
+                <p className="mt-4 text-sm text-zinc-400">
+                  No evaluation yet. Click &ldquo;Evaluate report&rdquo; to generate quality metrics.
+                </p>
+              )}
+            </section>
 
             {sectionEntries ? (
               <section className="space-y-6">

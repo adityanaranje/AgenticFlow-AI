@@ -71,7 +71,7 @@ const featureHighlights = [
     icon: ClipboardCheck,
     title: "Evaluations",
     text: "Measure the quality of generated answers.",
-    href: null,
+    href: "/evaluations",
   },
 ];
 
