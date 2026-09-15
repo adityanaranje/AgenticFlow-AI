@@ -98,16 +98,11 @@ def _existing_chunk_ids(chunk_ids: set[str]) -> set[str]:
 
 
 def _store_sources(repo: ReportRepository, rows: list[dict[str, Any]]) -> None:
-    """Persist citation rows in bulk, falling back to one insert per row.
+    """Persist citation rows in bulk.
 
-    Repositories without the bulk helper (test doubles, older callers) keep
-    working exactly as before.
-
-    When a bulk insert fails (e.g. a foreign-key violation from a stale
-    chunk_id or document_id), the batch is retried row-by-row: any row that
-    still fails has its ``document_id`` and ``chunk_id`` set to ``None`` and
-    is re-inserted.  The citation metadata (filename, page, label) is always
-    preserved — only the optional FK references are dropped.
+    The repository handles FK violations internally: if a bulk insert fails
+    due to stale chunk_id / document_id references, each row is retried
+    individually with NULL foreign keys so citation metadata is always kept.
     """
     if not rows:
         return
@@ -115,44 +110,12 @@ def _store_sources(repo: ReportRepository, rows: list[dict[str, Any]]) -> None:
     bulk = getattr(repo, "create_sources", None)
     if not callable(bulk):
         for row in rows:
-            _insert_single_source(repo, row)
+            repo.create_source(row)
         return
 
     size = max(1, int(settings.report_source_batch_size))
     for start in range(0, len(rows), size):
-        batch = rows[start : start + size]
-        try:
-            bulk(batch)
-        except Exception:
-            logger.warning(
-                "Bulk source insert failed (%d rows); retrying row-by-row.",
-                len(batch),
-                exc_info=True,
-            )
-            for row in batch:
-                _insert_single_source(repo, row)
-
-
-def _insert_single_source(
-    repo: ReportRepository, row: dict[str, Any]
-) -> None:
-    """Insert one source row; on FK violation retry with NULL references."""
-    try:
-        repo.create_source(row)
-    except Exception:
-        # Strip the FK columns that may reference deleted documents/chunks
-        # and retry — the citation metadata is still valuable.
-        logger.debug(
-            "Source insert failed; retrying with NULL document_id/chunk_id.",
-            exc_info=True,
-        )
-        safe_row = dict(row)
-        safe_row["document_id"] = None
-        safe_row["chunk_id"] = None
-        try:
-            repo.create_source(safe_row)
-        except Exception:
-            logger.warning("Source insert failed even with NULL FKs; skipping.")
+        bulk(rows[start : start + size])
 
 
 def store_report(state: ResearchState) -> dict[str, Any] | None:
