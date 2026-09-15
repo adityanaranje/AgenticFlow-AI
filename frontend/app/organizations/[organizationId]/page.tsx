@@ -227,7 +227,7 @@ export default async function OrganizationPage({
             })}
           </div>
           <p className="mt-4 text-xs text-zinc-400">
-            Documents are live. Research and reports open in the next phases.
+            All modules are live — upload documents, run research, and generate reports.
           </p>
         </section>
 

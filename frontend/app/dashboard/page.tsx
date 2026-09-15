@@ -48,26 +48,30 @@ function formatMemberSince(iso: string | null): string {
   return new Intl.DateTimeFormat("en", { month: "short", year: "numeric" }).format(date);
 }
 
-const comingSoon = [
+const featureHighlights = [
   {
     icon: UploadCloud,
     title: "Documents",
     text: "Upload files and build your knowledge base.",
+    href: "/documents",
   },
   {
     icon: Bot,
     title: "AI Research",
     text: "Run agentic research against your documents.",
+    href: "/research",
   },
   {
     icon: FileSearch,
     title: "Reports",
     text: "Generate and share cited research reports.",
+    href: "/reports",
   },
   {
     icon: ClipboardCheck,
     title: "Evaluations",
     text: "Measure the quality of generated answers.",
+    href: null,
   },
 ];
 
@@ -264,35 +268,60 @@ export default async function DashboardPage() {
           )}
         </section>
 
-        {/* Coming next */}
+        {/* Workspace modules */}
         <section className="animate-fade-up anim-delay-2 pb-6">
           <h2 className="mb-5 text-lg font-semibold text-zinc-900 dark:text-white">
             Workspace modules
           </h2>
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            {comingSoon.map(({ icon: Icon, title, text }) => (
-              <article
-                key={title}
-                className="card group relative overflow-hidden p-6"
-              >
-                <div
-                  aria-hidden="true"
-                  className="absolute -right-10 -top-10 h-28 w-28 rounded-full bg-indigo-500/10 blur-2xl transition group-hover:bg-indigo-500/20"
-                />
-                <span className="relative inline-flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-                  <Icon className="h-5 w-5" aria-hidden="true" />
-                </span>
-                <h3 className="relative mt-4 text-sm font-semibold text-zinc-900 dark:text-white">
-                  {title}
-                </h3>
-                <p className="relative mt-1 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
-                  {text}
-                </p>
-                <span className="relative mt-4 inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-600 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300">
-                  Coming next
-                </span>
-              </article>
-            ))}
+            {featureHighlights.map(({ icon: Icon, title, text, href }) => {
+              const defaultOrgId = organizations[0]?.organization.id;
+              const fullHref = href && defaultOrgId
+                ? `/organizations/${defaultOrgId}${href}`
+                : href && !defaultOrgId
+                ? `/organizations/new`
+                : null;
+
+              const inner = (
+                <>
+                  <div
+                    aria-hidden="true"
+                    className="absolute -right-10 -top-10 h-28 w-28 rounded-full bg-indigo-500/10 blur-2xl transition group-hover:bg-indigo-500/20"
+                  />
+                  <span className="relative inline-flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+                    <Icon className="h-5 w-5" aria-hidden="true" />
+                  </span>
+                  <h3 className="relative mt-4 text-sm font-semibold text-zinc-900 dark:text-white">
+                    {title}
+                  </h3>
+                  <p className="relative mt-1 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                    {text}
+                  </p>
+                  {fullHref ? (
+                    <span className="relative mt-4 inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-600 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
+                      Available
+                    </span>
+                  ) : (
+                    <span className="relative mt-4 inline-flex items-center rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400">
+                      Coming soon
+                    </span>
+                  )}
+                </>
+              );
+
+              const cardClasses =
+                "card group relative overflow-hidden p-6 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-zinc-900/5 dark:hover:shadow-black/30";
+
+              return fullHref ? (
+                <Link key={title} href={fullHref} className={cardClasses}>
+                  {inner}
+                </Link>
+              ) : (
+                <article key={title} className={cardClasses}>
+                  {inner}
+                </article>
+              );
+            })}
           </div>
         </section>
       </main>

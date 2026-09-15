@@ -11,6 +11,59 @@ import {
   Sparkles,
 } from "lucide-react";
 
+/* ------------------------------------------------------------------ */
+/* Pipeline steps shown in the progress graph                         */
+/* ------------------------------------------------------------------ */
+
+const PIPELINE_STEPS = [
+  { key: "queued", label: "Queued" },
+  { key: "planning", label: "Planning" },
+  { key: "retrieving", label: "Retrieving" },
+  { key: "analyzing", label: "Analyzing" },
+  { key: "checking_gaps", label: "Gap check" },
+  { key: "synthesizing", label: "Synthesizing" },
+  { key: "validating", label: "Validating" },
+  { key: "completed", label: "Complete" },
+] as const;
+
+const FAILED_STATUSES = new Set(["failed", "cancelled"]);
+
+function stepState(
+  stepKey: string,
+  currentStatus: string,
+  graphState: Record<string, unknown> | null,
+): "done" | "active" | "upcoming" | "failed" {
+  const idx = PIPELINE_STEPS.findIndex((s) => s.key === stepKey);
+
+  // Normal terminal status "completed" - everything is done
+  if (currentStatus === "completed") {
+    return "done";
+  }
+
+  // Non-pipeline terminal statuses ("failed" / "cancelled")
+  if (FAILED_STATUSES.has(currentStatus)) {
+    // Try to find the last active step from graph_state so we can show
+    // which step failed and mark everything before it as done.
+    const lastStep = (graphState?.last_step ?? graphState?.step ?? null) as string | null;
+    if (lastStep) {
+      const lastIdx = PIPELINE_STEPS.findIndex((s) => s.key === lastStep);
+      if (lastIdx !== -1) {
+        if (idx < lastIdx) return "done";
+        if (idx === lastIdx) return "failed";
+        return "upcoming";
+      }
+    }
+    // Fallback: can't determine step, mark all upcoming
+    return "upcoming";
+  }
+
+  // Normal in-progress / queued flow
+  const cur = PIPELINE_STEPS.findIndex((s) => s.key === currentStatus);
+  if (idx < cur) return "done";
+  if (idx === cur) return "active";
+  return "upcoming";
+}
+
 // A run moves through several nodes; poll quickly while it is in flight.
 const POLL_ACTIVE_MS = 2500;
 
@@ -146,6 +199,72 @@ export default function ResearchRunTracker({
             <span>{run.error}</span>
           </div>
         )}
+      </section>
+
+      {/* Pipeline progress graph */}
+      <section className="card p-6 overflow-x-auto">
+        <h2 className="sr-only">Research pipeline</h2>
+        <div className="flex items-start gap-0 min-w-max">
+          {PIPELINE_STEPS.map((step, i) => {
+            const state = stepState(step.key, run.status, run.graph_state);
+            const isLast = i === PIPELINE_STEPS.length - 1;
+            return (
+              <div key={step.key} className="flex items-start">
+                {/* Node */}
+                <div className="flex flex-col items-center" style={{ minWidth: 72 }}>
+                  <div
+                    className={`
+                      flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold
+                      transition-colors duration-300
+                      ${state === "done" ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/20" : ""}
+                      ${state === "active" ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/30 ring-4 ring-indigo-500/20" : ""}
+                      ${state === "upcoming" ? "border-2 border-zinc-200 bg-white text-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-500" : ""}
+                      ${state === "failed" ? "bg-rose-500 text-white shadow-md shadow-rose-500/20" : ""}
+                    `}
+                  >
+                    {state === "done" ? (
+                      <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
+                    ) : state === "active" ? (
+                      <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+                    ) : state === "failed" ? (
+                      <CircleAlert className="h-5 w-5" aria-hidden="true" />
+                    ) : (
+                      <span>{i + 1}</span>
+                    )}
+                  </div>
+                  <p
+                    className={`mt-2 text-center text-[11px] font-semibold leading-tight
+                      ${state === "done" ? "text-emerald-600 dark:text-emerald-400" : ""}
+                      ${state === "active" ? "text-indigo-600 dark:text-indigo-400" : ""}
+                      ${state === "upcoming" ? "text-zinc-400 dark:text-zinc-500" : ""}
+                      ${state === "failed" ? "text-rose-600 dark:text-rose-400" : ""}
+                    `}
+                  >
+                    {step.label}
+                  </p>
+                </div>
+                {/* Connector line */}
+                {!isLast && (
+                  <div className="flex flex-col items-center" style={{ width: 36 }}>
+                    <div className="h-5 w-full flex items-center">
+                      <div
+                        className={`h-[3px] w-full rounded-full transition-colors duration-300
+                          ${
+                            stepState(step.key, run.status, run.graph_state) === "done"
+                              ? "bg-emerald-400 dark:bg-emerald-500"
+                              : stepState(step.key, run.status, run.graph_state) === "active"
+                              ? "bg-gradient-to-r from-indigo-500 to-zinc-200 dark:to-zinc-700"
+                              : "bg-zinc-200 dark:bg-zinc-700"
+                          }
+                        `}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </section>
 
       {/* Metrics */}
