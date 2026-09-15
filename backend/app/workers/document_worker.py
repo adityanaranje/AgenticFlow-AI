@@ -337,9 +337,18 @@ def _pop_with_backoff(wait: int) -> str | None:
     return job_queue.pop_with_backoff(job_queue.pop_next, wait)
 
 
-def _consume_forever(worker_id: int, wait: int) -> None:
+# Set by SIGINT/SIGTERM (see :func:`main`) or by tests to stop the consumer
+# threads: each thread finishes the document it is processing and exits
+# instead of popping another job, so a container stop is graceful.
+_STOP = threading.Event()
+
+
+def _consume_forever(
+    worker_id: int, wait: int, stop_event: threading.Event | None = None
+) -> None:
     """Pop and process jobs until the process is stopped."""
-    while True:
+    stop = stop_event if stop_event is not None else _STOP
+    while not stop.is_set():
         document_id = _pop_with_backoff(wait)
         if not document_id:
             continue
@@ -354,13 +363,17 @@ def _consume_forever(worker_id: int, wait: int) -> None:
 
 
 def run_worker(
-    interval: int | None = None, concurrency: int | None = None
+    interval: int | None = None,
+    concurrency: int | None = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """Blocking consumer loop. Polls Redis for jobs and processes them.
 
     ``concurrency`` documents are processed in parallel (embeddings and
     remote writes are I/O-bound, so threads keep the queue moving). Jobs are
     popped from the shared Redis list, which load-balances naturally.
+    Setting ``stop_event`` (or signalling the process) stops the threads once
+    the document they are processing finishes.
     """
     wait = interval if interval is not None else settings.document_worker_poll_seconds
     # A blocking BLPOP must return before the Redis client's socket read
@@ -375,10 +388,11 @@ def run_worker(
         wait,
     )
 
+    stop = stop_event if stop_event is not None else _STOP
     threads = [
         threading.Thread(
             target=_consume_forever,
-            args=(index, wait),
+            args=(index, wait, stop),
             name=f"document-worker-{index}",
             daemon=True,
         )
@@ -392,9 +406,29 @@ def run_worker(
             thread.join()
     except KeyboardInterrupt:  # pragma: no cover - interactive stop
         logger.info("Document worker interrupted; shutting down.")
+        stop.set()
+
+
+def _install_signal_handlers(stop: threading.Event) -> None:
+    """Stop the loops on Ctrl+C / SIGTERM (docker stop) instead of being killed."""
+    import signal
+
+    def _handle(signum, _frame):  # pragma: no cover - signal delivery
+        logger.info("Document worker received signal %s; finishing current job.", signum)
+        stop.set()
+
+    for name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _handle)
+        except (ValueError, OSError):  # pragma: no cover - non-main thread
+            return
 
 
 def main() -> None:
+    _install_signal_handlers(_STOP)
     run_worker()
 
 

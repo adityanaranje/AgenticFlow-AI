@@ -95,9 +95,14 @@ def pop_next_document(timeout: int = 0) -> str | None:
     return str(payload.get("document_id", "")) or None
 
 
+def _research_payload(research_id: str) -> dict:
+    """The queue message for one research run (single source of truth)."""
+    return {"research_id": research_id}
+
+
 def enqueue_research(research_id: str) -> bool:
     """Enqueue a research run for background execution."""
-    ok = _push(RESEARCH_QUEUE, {"research_id": research_id})
+    ok = _push(RESEARCH_QUEUE, _research_payload(research_id))
     if ok:
         logger.info("Enqueued research %s.", research_id)
     else:
@@ -111,6 +116,26 @@ def pop_next_research(timeout: int = 0) -> str | None:
         return None
     return str(payload.get("research_id", "")) or None
 
+
+def claim_research(research_id: str) -> bool:
+    """Take an unclaimed research job back off the queue.
+
+    Used by the API process when no worker picked a job up (a bare ``uvicorn``
+    dev setup, or a worker that is down): the run would otherwise sit in
+    ``queued`` forever. ``LREM`` matches the exact payload that was pushed and
+    is atomic, so a job is either removed here (``True`` — the caller may run
+    it in-process) or was already popped by a worker (``False``, nothing to
+    do). It can never be executed twice.
+    """
+    client = get_redis_client()
+    if client is None:
+        return False
+    raw = json.dumps(_research_payload(research_id))
+    try:
+        return bool(client.lrem(RESEARCH_QUEUE, 1, raw))
+    except Exception:
+        logger.exception("Failed to claim the unclaimed research job %s", research_id)
+        return False
 
 # Backwards-compatible alias used by the document worker tests.
 pop_next = pop_next_document

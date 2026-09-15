@@ -167,6 +167,7 @@ npm install
 | `EVIDENCE_MAX_CHUNKS`             | backend    |          | Chunks analysed per run (default `48`)    |
 | `RESEARCH_WORKER_CONCURRENCY`     | backend    |          | Research runs in parallel (default `2`)   |
 | `RESEARCH_WORKER_POLL_SECONDS`    | backend    |          | Idle queue poll interval (default `2`)    |
+| `RESEARCH_UNCLAIMED_FALLBACK_SECONDS` | backend |         | Take over a run no worker claimed (default `15`; `0` = off) |
 | `REPORT_SOURCE_BATCH_SIZE`        | backend    |          | Rows per report source insert (default `100`) |
 | `EMBEDDING_CACHE_TTL_SECONDS`     | backend    |          | TTL for cached query embeddings (default `3600`) |
 | `LANGFUSE_HOST`                   | backend    |    🔒    | Default `https://cloud.langfuse.com`      |
@@ -197,6 +198,32 @@ cd backend
 ```
 
 API docs: http://localhost:8000/docs — Health: http://localhost:8000/health
+
+### Run the workers (**required** for uploads and research)
+
+The API only *queues* work. Uploaded documents stay `pending` and research runs
+stay `queued` until a worker process consumes the Redis queue:
+
+```bash
+./scripts/dev-workers.sh
+# or, manually (one terminal each, from backend/):
+python -m app.workers.document_worker    # parse -> chunk -> embed -> Qdrant
+python -m app.workers.research_worker    # plan -> retrieve -> analyse -> report
+```
+
+On Windows PowerShell use `.\scripts\dev-workers.ps1` (add `-NoWindow` to keep
+both logs in the current console).
+
+Symptoms of a missing worker: a research run stuck on **"Queued — waiting for a
+worker"**, or an uploaded document stuck on `pending`/`processing`. If Redis is
+not configured at all (no `REDIS_URL`), the API process runs the work itself in
+its background pool — but the recommended setup is the two worker processes,
+exactly as `docker compose` does it.
+
+After `RESEARCH_UNCLAIMED_FALLBACK_SECONDS` (default `15`, `0` disables) the API
+also takes a research run over when nothing has consumed its queue message, so a
+single-process dev setup still works; the takeover is an atomic queue claim, so
+a job can never run twice.
 
 ### Run the frontend
 

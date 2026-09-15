@@ -155,6 +155,14 @@ class Settings(BaseSettings):
     research_worker_poll_seconds: int = Field(
         default=2, alias="RESEARCH_WORKER_POLL_SECONDS"
     )
+    # If a queued run is still sitting on the queue this many seconds later,
+    # no worker is consuming it (bare `uvicorn` dev setup, or a worker that is
+    # down) and the API process takes the job over so the run does not wait
+    # forever. The takeover is an atomic queue claim, so a job can never run
+    # twice. Set to 0 to disable and require a worker always.
+    research_unclaimed_fallback_seconds: int = Field(
+        default=15, alias="RESEARCH_UNCLAIMED_FALLBACK_SECONDS"
+    )
     # Rows per ``report_sources`` insert, and bulk inserts for chunk rows /
     # report sources in flight.
     report_source_batch_size: int = Field(

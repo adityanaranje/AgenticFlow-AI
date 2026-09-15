@@ -33,9 +33,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from app.agents import context as ctx_mod
 from app.agents import llm as llm_mod
-from app.agents import prompts
+from app.agents import prompts  # noqa: F401  (prompt surface)
 from app.agents.context import ResearchServices
 from app.agents.nodes.citation_validator import citation_validator_node
 from app.agents.nodes.evidence_analyzer import evidence_analyzer_node
@@ -170,6 +169,12 @@ def run_research(research_id: str) -> dict[str, Any]:
 
     organization_id = run["organization_id"]
     config = dict(run.get("config") or {})
+
+    if run.get("status") == "cancelled":
+        # Cancelled while it was still queued: the job must not start now.
+        logger.info("Research %s was cancelled before it started; skipping.", research_id)
+        return {"status": "cancelled"}
+
     max_iter = int(config.get("max_iterations", settings.max_research_iterations))
 
     state = ResearchState(
@@ -350,9 +355,18 @@ def build_research_graph():
     return builder.compile()
 
 
-def _consume_forever(worker_id: int, wait: int) -> None:
+# Set by SIGINT/SIGTERM (see :mod:`app.workers.research_worker`) or by tests to
+# stop the consumer threads: each thread finishes the run it is executing and
+# exits instead of popping another job, so a container stop is graceful.
+_STOP = threading.Event()
+
+
+def _consume_forever(
+    worker_id: int, wait: int, stop_event: threading.Event | None = None
+) -> None:
     """Pop and execute research runs until the process is stopped."""
-    while True:
+    stop = stop_event if stop_event is not None else _STOP
+    while not stop.is_set():
         research_id = job_queue.pop_with_backoff(job_queue.pop_next_research, wait)
         if not research_id:
             continue
@@ -367,14 +381,17 @@ def _consume_forever(worker_id: int, wait: int) -> None:
 
 
 def run_worker_loop(
-    interval: int | None = None, concurrency: int | None = None
+    interval: int | None = None,
+    concurrency: int | None = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """Blocking research worker consumer.
 
     ``concurrency`` runs execute in parallel (each is a chain of network-bound
     model and vector calls), so a second question does not wait for the first
     to finish. Jobs are popped from the shared Redis list, which
-    load-balances naturally.
+    load-balances naturally. Setting ``stop_event`` (or signalling the
+    process) stops the threads once their current run finishes.
     """
     wait = interval if interval is not None else settings.research_worker_poll_seconds
     # A blocking BLPOP must return before the Redis client's socket read
@@ -389,10 +406,11 @@ def run_worker_loop(
         wait,
     )
 
+    stop = stop_event if stop_event is not None else _STOP
     threads = [
         threading.Thread(
             target=_consume_forever,
-            args=(index, wait),
+            args=(index, wait, stop),
             name=f"research-worker-{index}",
             daemon=True,
         )
@@ -406,3 +424,4 @@ def run_worker_loop(
             thread.join()
     except KeyboardInterrupt:  # pragma: no cover - interactive stop
         logger.info("Research worker interrupted; shutting down.")
+        stop.set()

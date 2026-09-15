@@ -6,6 +6,8 @@ Small convenience scripts for local development (Phase 1).
 | ----------------------------- | ---------------------------------------------------------- |
 | `scripts/bootstrap.sh`        | Create the backend venv and install Python dependencies.   |
 | `scripts/dev-backend.sh`      | Run the FastAPI backend with hot reload on port 8000.      |
+| `scripts/dev-workers.sh`      | Run the document + research workers (Redis consumers).     |
+| `scripts/dev-workers.ps1`     | Same for Windows PowerShell.                               |
 | `scripts/dev-frontend.sh`     | Install frontend deps and run Next.js dev server on 3000.  |
 | `scripts/check-health.sh`     | Poll backend and frontend health endpoints.               |
 | `scripts/benchmark-ingestion.py` | Measure ingestion speed against simulated remote latencies. |
@@ -41,7 +43,14 @@ All scripts assume they are executed from the repository root:
 
 ```bash
 ./scripts/bootstrap.sh
-./scripts/dev-backend.sh      # terminal 1
-./scripts/dev-frontend.sh     # terminal 2
+./scripts/dev-backend.sh      # terminal 1 (API)
+./scripts/dev-workers.sh      # terminal 2 (document + research workers)
+./scripts/dev-frontend.sh     # terminal 3
 ./scripts/check-health.sh
 ```
+
+On Windows PowerShell the same entry points are `scripts\dev-workers.ps1`
+(add `-NoWindow` to keep both worker logs in the current console) and the
+`python -m uvicorn ...` / `npm run dev` commands from the main README. Without
+the workers, uploads stay `pending` and research runs stay `queued` — the API
+only queues work.

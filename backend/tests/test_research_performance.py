@@ -559,9 +559,10 @@ def test_research_worker_runs_several_runs_in_parallel(monkeypatch):
     monkeypatch.setattr(graph_mod, "run_research", run_research)
     monkeypatch.setattr(settings, "research_worker_concurrency", 3)
 
+    stop = threading.Event()
     thread = threading.Thread(
         target=graph_mod.run_worker_loop,
-        kwargs={"interval": 1, "concurrency": 3},
+        kwargs={"interval": 1, "concurrency": 3, "stop_event": stop},
         daemon=True,
     )
     thread.start()
@@ -573,7 +574,11 @@ def test_research_worker_runs_several_runs_in_parallel(monkeypatch):
         assert max_active >= 3, f"runs executed sequentially (max concurrency {max_active})"
     finally:
         release.set()
-        assert thread.is_alive()
+        stop.set()
+        # Consumer threads must exit once stopped (no background polling left
+        # behind for the rest of the session).
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 # --------------------------------------------------------------------------
