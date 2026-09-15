@@ -106,7 +106,7 @@ export default async function EvaluationDetailPage({
                 )}
                 <span className="flex items-center gap-1 text-xs text-zinc-400">
                   <Calendar className="h-3.5 w-3.5" aria-hidden="true" />
-                  {new Date(run.created_at).toLocaleDateString("en", { dateStyle: "medium", timeStyle: "short" })}
+                  {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(run.created_at))}
                 </span>
                 <span
                   className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${
