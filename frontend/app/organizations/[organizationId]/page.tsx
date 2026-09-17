@@ -80,8 +80,9 @@ export default async function OrganizationPage({
       .eq("organization_id", organization.id),
     supabase
       .from("organization_members")
+      // `!left` keeps members without a readable profile in the list.
       .select(
-        "user_id, role, profiles ( id, full_name )",
+        "user_id, role, profiles!left ( id, full_name )",
       )
       .eq("organization_id", organization.id),
   ]);

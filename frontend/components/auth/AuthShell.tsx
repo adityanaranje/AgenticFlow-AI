@@ -84,7 +84,7 @@ export default function AuthShell({
         </div>
 
         <p className="relative text-xs text-zinc-500">
-          AgentFlow AI — Phase 1 · Foundation &amp; infrastructure
+          AgentFlow AI — AI research over your organization&apos;s knowledge
         </p>
       </aside>
 

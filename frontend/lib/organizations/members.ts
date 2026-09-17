@@ -59,8 +59,11 @@ export async function listOrganizationMembers(
 
   const { data } = await supabase
     .from("organization_members")
+    // `!left` forces a LEFT join: a member whose profile row is missing
+    // (or unreadable) still appears, with a null profile, instead of
+    // being silently dropped from the roster.
     .select(
-      "id, user_id, role, created_at, profiles ( id, full_name, avatar_url )",
+      "id, user_id, role, created_at, profiles!left ( id, full_name, avatar_url )",
     )
     .eq("organization_id", organizationId)
     .order("created_at", { ascending: true });

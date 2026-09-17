@@ -7,8 +7,9 @@ join-request features:
 | ---- | ------------ |
 | `database/migrations/015_member_management.sql` | The `organization_members_guard` trigger, the `organization_invitations` table + RLS, `leave_organization`, `accept_invitation`, `invitation_preview` |
 | `database/migrations/016_invitation_requests.sql` | `declined` status, `my_pending_invitations`, `respond_to_invitation`, `search_invitable_users`, `resolve_invitable_email`, and a hardened guard trigger |
+| `database/migrations/017_member_profiles_visibility.sql` | Lets members see each other's profiles — **required**, or the members list renders empty |
 
-**Run 015 first, then 016.** Both are wrapped in a transaction and are
+**Run 015, then 016, then 017.** All three are wrapped in a transaction and are
 idempotent — re-running them is safe.
 
 If this is a brand-new database, apply `001` … `014` first, in filename
@@ -22,6 +23,12 @@ order, as described in the README.
 2. Paste the entire contents of `database/migrations/015_member_management.sql`
    and click **Run**. Wait for "Success".
 3. Repeat with `database/migrations/016_invitation_requests.sql`.
+4. Repeat with `database/migrations/017_member_profiles_visibility.sql`.
+
+> **If you already ran 015 and 016**, you only need 017. Without it the
+> members roster shows nobody but yourself: `profiles` RLS exposed only
+> your own row, so the `organization_members -> profiles` join dropped
+> everyone else.
 
 ## Option B — `psql`
 
@@ -37,6 +44,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f database/migrations/016_invitation_requests.sql
+
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f database/migrations/017_member_profiles_visibility.sql
 ```
 
 `ON_ERROR_STOP=1` matters: without it `psql` would keep going after a
@@ -64,10 +74,11 @@ where proname in (
     'my_pending_invitations',
     'respond_to_invitation',
     'search_invitable_users',
-    'resolve_invitable_email'
+    'resolve_invitable_email',
+    'shares_organization_with'
 )
 order by proname;
--- expect 8 rows
+-- expect 9 rows
 
 -- 2. The invitations table exists with the declined status allowed.
 select conname, pg_get_constraintdef(oid)
@@ -82,14 +93,21 @@ where tgrelid = 'public.organization_members'::regclass
   and not tgisinternal;
 -- expect organization_members_guard (and the updated_at trigger)
 
--- 4. The invariant really holds (this MUST fail):
+-- 4. Members can see each other (fixes the empty roster).
+select polname
+from pg_policy
+where polrelid = 'public.profiles'::regclass
+order by polname;
+-- expect profiles_select_co_member among them
+
+-- 5. The invariant really holds (this MUST fail):
 update public.organization_members
 set role = 'admin'
 where role = 'owner';
 -- expect ERROR: An organization must always have at least one owner.
 ```
 
-Step 4 is the important one — it proves the guard trigger is live.
+Step 5 is the important one — it proves the guard trigger is live.
 
 ---
 

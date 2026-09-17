@@ -36,9 +36,8 @@ const features = [
 /**
  * Home page — public landing / application shell entry point.
  *
- * Phase 1 scope: no AI functionality is claimed or faked here.
- * The page describes the platform and links to authentication,
- * which is handled by Supabase Auth (email + Google).
+ * Describes the platform and links to authentication, which is handled
+ * by Supabase Auth (email + Google).
  */
 export default function Home() {
   return (
@@ -86,15 +85,7 @@ export default function Home() {
       <main className="relative z-10 mx-auto w-full max-w-6xl px-6">
         {/* Hero */}
         <section className="flex flex-col items-center py-20 text-center sm:py-28">
-          <span className="animate-fade-up inline-flex items-center gap-2 rounded-full border border-indigo-200/70 bg-white/70 px-4 py-1.5 text-xs font-medium text-indigo-700 shadow-sm backdrop-blur dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-2 w-2 animate-ping rounded-full bg-indigo-400 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-indigo-500" />
-            </span>
-            Phase 1 · Foundation &amp; infrastructure
-          </span>
-
-          <h1 className="animate-fade-up anim-delay-1 mt-7 max-w-3xl text-4xl font-semibold leading-[1.1] tracking-tight text-zinc-950 dark:text-white sm:text-6xl">
+          <h1 className="animate-fade-up max-w-3xl text-4xl font-semibold leading-[1.1] tracking-tight text-zinc-950 dark:text-white sm:text-6xl">
             Research your organization&apos;s knowledge{" "}
             <span className="bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 bg-clip-text text-transparent dark:from-indigo-400 dark:via-violet-400 dark:to-fuchsia-400">
               with AI agents
