@@ -401,6 +401,22 @@ The suite covers:
   prompts, progress-only mid-run writes and deterministic fallbacks
 - interpreter floor (`test_python_compat.py`): no 3.11+/3.12+ only API may enter
   the shipped code, so the backend still runs on Python 3.10
+- organization membership rules (`test_membership.py`): invitations, role
+  changes, removals and the "always at least one owner" invariant
+
+### Database (`pytest database/tests`)
+
+The member-management guard rules are verified against a **real**
+PostgreSQL instance, started and thrown away by the test run:
+
+```bash
+pip install pgserver "psycopg[binary]" pytest
+pytest database/tests
+```
+
+The harness stubs Supabase's `auth` schema (`auth.users`, `auth.uid()`,
+`auth.jwt()`), applies every migration in order, and then asserts the
+database — not just the application — refuses privilege escalation.
 
 ### Frontend
 
@@ -511,9 +527,47 @@ curl http://localhost:8000/health
 
 SQL migrations live in `database/migrations/` (extensions, profiles,
 organizations, documents, research, reports, evaluations, RLS, storage,
-indexes). Apply them in a Supabase SQL editor or via `psql`, in filename
-order, then run `database/seed.sql` for development data (it intentionally
-inserts nothing today — users/orgs are created through the app).
+indexes, member management). Apply them in a Supabase SQL editor or via
+`psql`, in filename order, then run `database/seed.sql` for development data
+(it intentionally inserts nothing today — users/orgs are created through the
+app).
+
+### Organizations, members and roles
+
+Roles are `owner > admin > researcher > viewer`, defined once in the
+database (`organization_members_role_check`) and mirrored in
+`backend/app/core/rbac.py` and `frontend/lib/organizations/types.ts`.
+
+| Capability | viewer | researcher | admin | owner |
+| ---------- | :----: | :--------: | :---: | :---: |
+| Read documents, research, reports | ✅ | ✅ | ✅ | ✅ |
+| Upload documents, run research | — | ✅ | ✅ | ✅ |
+| Invite / remove members, change roles | — | — | ✅ | ✅ |
+| Grant or revoke the `owner` role | — | — | — | ✅ |
+| Delete the organization | — | — | — | ✅ |
+
+**Adding members.** An admin or owner opens
+`/organizations/{id}/members` and invites by email. If the address already
+belongs to a registered user they are added immediately; otherwise a
+pending invitation is created and the inviter gets a one-time link
+(`/invitations/{token}`) to share. Invitations expire after 14 days, can be
+revoked, and can only be accepted by the address they were issued to.
+
+**Invariants enforced by the database** (migration 015, trigger
+`organization_members_guard`) — not merely by the UI or API:
+
+- an organization always keeps at least one owner (the last owner cannot be
+  demoted, removed, or leave),
+- only an owner may grant or revoke `owner`,
+- nobody may change their own role, assign a role above their own, or act on
+  a higher-ranked member,
+- any member may leave voluntarily (`leave_organization`),
+- membership rows are never inserted from the browser: `create_organization`
+  and `accept_invitation` are `security definer` functions that derive the
+  user from `auth.uid()`.
+
+The frontend helpers in `lib/organizations/rbac.ts` only shape the UI; RLS,
+the guard trigger, and `backend/app/core/rbac.py` are the security boundary.
 
 ## 13. Phase 1 completion checklist
 

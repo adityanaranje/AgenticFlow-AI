@@ -250,11 +250,12 @@ export default async function OrganizationPage({
               <Users className="h-5 w-5 text-indigo-500" aria-hidden="true" />
               Members
             </h2>
-            {canManageOrganization(role) && (
-              <span className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-600 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300">
-                You can manage members
-              </span>
-            )}
+            <Link
+              href={`/organizations/${organization.id}/members`}
+              className="btn-secondary px-3.5 py-1.5 text-xs"
+            >
+              {canManageOrganization(role) ? "Manage members" : "View members"}
+            </Link>
           </div>
 
           <div className="card divide-y divide-zinc-100 dark:divide-zinc-800">
