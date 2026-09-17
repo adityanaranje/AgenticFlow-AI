@@ -119,6 +119,7 @@ MIGRATION_ORDER = [
     "013_document_ingestion.sql",
     "014_research_reports.sql",
     "015_member_management.sql",
+    "016_invitation_requests.sql",
 ]
 
 
@@ -149,6 +150,11 @@ class Database:
         with self.connection.cursor() as cursor:
             cursor.execute(sql, params)
             return cursor.fetchone()
+
+    def fetchall(self, sql: str, params: tuple = ()):
+        with self.connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            return cursor.fetchall()
 
 
 @pytest.fixture(scope="session")

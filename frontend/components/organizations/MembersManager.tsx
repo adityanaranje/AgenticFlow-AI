@@ -308,6 +308,10 @@ export default function MembersManager({
             Invite a member
           </h2>
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            If they already have an account, the request appears on their
+            dashboard to accept or decline.
+          </p>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
             {roleHelp[inviteRole]}
           </p>
 
@@ -364,8 +368,9 @@ export default function MembersManager({
           {inviteUrl && (
             <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50/60 p-4 dark:border-indigo-500/30 dark:bg-indigo-500/10">
               <p className="text-xs font-medium text-indigo-800 dark:text-indigo-200">
-                Share this link with the invitee — it works once, for their
-                email address only.
+                They will see this request when they sign in. If they do not
+                have an account yet, share this link — it works once, for
+                their email address only.
               </p>
               <div className="mt-2 flex items-center gap-2">
                 <code className="flex-1 truncate rounded-lg bg-white px-3 py-2 font-mono text-xs text-zinc-700 dark:bg-zinc-900 dark:text-zinc-200">

@@ -16,7 +16,11 @@ import {
 
 import Logo from "@/components/brand/Logo";
 import OrganizationSwitcher from "@/components/organizations/OrganizationSwitcher";
+import InvitationRequests from "@/components/organizations/InvitationRequests";
+import QuickAddMember from "@/components/organizations/QuickAddMember";
 import { getUserOrganizations } from "@/lib/organizations/server";
+import { listMyPendingInvitations } from "@/lib/organizations/members";
+import { canManageOrganization } from "@/lib/organizations/rbac";
 import type { OrganizationRole } from "@/lib/organizations/types";
 import { getSupabasePublicEnv } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
@@ -106,6 +110,9 @@ export default async function DashboardPage() {
   // memberships (never trusts a client-supplied organization id).
   const myOrganizations = await getUserOrganizations();
 
+  // Incoming join requests addressed to this user's own verified email.
+  const pendingInvitations = await listMyPendingInvitations();
+
   const displayName = profile?.full_name?.trim() || user.email?.split("@")[0] || "there";
   const initial = displayName.charAt(0).toUpperCase();
   const organizations = myOrganizations.map(({ membership, organization }) => ({
@@ -113,6 +120,15 @@ export default async function DashboardPage() {
     role: membership.role as OrganizationRole,
     created_at: membership.created_at,
   }));
+
+  // Only organizations where this user may actually invite people.
+  const manageableOrganizations = organizations
+    .filter(({ role }) => canManageOrganization(role))
+    .map(({ organization, role }) => ({
+      id: organization.id,
+      name: organization.name,
+      role,
+    }));
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -187,6 +203,9 @@ export default async function DashboardPage() {
             </div>
           </div>
         </section>
+
+        {/* Incoming invitations — shown first so they are not missed */}
+        <InvitationRequests invitations={pendingInvitations} />
 
         {/* Organizations */}
         <section className="animate-fade-up anim-delay-1">
@@ -267,6 +286,9 @@ export default async function DashboardPage() {
             </div>
           )}
         </section>
+
+        {/* Send a join request to someone */}
+        <QuickAddMember organizations={manageableOrganizations} />
 
         {/* Workspace modules */}
         <section className="animate-fade-up anim-delay-2 pb-6">

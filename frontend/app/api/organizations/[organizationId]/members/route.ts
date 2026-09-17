@@ -70,25 +70,67 @@ export async function POST(
     return error("Only an admin or owner can invite members.", 403);
   }
 
-  let body: { email?: unknown; role?: unknown };
+  let body: { email?: unknown; role?: unknown; user_id?: unknown };
   try {
-    body = (await request.json()) as { email?: unknown; role?: unknown };
+    body = (await request.json()) as {
+      email?: unknown;
+      role?: unknown;
+      user_id?: unknown;
+    };
   } catch {
-    return error("A JSON body with an email and role is required.", 400);
+    return error("A JSON body with an email or user_id and role is required.", 400);
   }
 
-  const email =
-    typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const invitedRole = typeof body.role === "string" ? body.role : "viewer";
 
-  if (!email || !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)) {
-    return error("Enter a valid email address.", 400);
-  }
   if (!isOrganizationRole(invitedRole)) {
     return error("Choose a valid role.", 400);
   }
   if (invitedRole === "owner" && role !== "owner") {
     return error("Only an owner can grant the owner role.", 403);
+  }
+
+  // The dashboard "add member" picker sends a user_id chosen from the
+  // narrow `search_invitable_users` result set. Resolve it to that user's
+  // email through the secured function rather than trusting the browser:
+  // `resolve_invitable_email` re-checks that the caller is an admin/owner.
+  let email = "";
+
+  if (typeof body.user_id === "string" && body.user_id) {
+    const { data: resolved, error: resolveError } = await supabase.rpc(
+      "resolve_invitable_email",
+      {
+        target_organization_id: organizationId,
+        target_user_id: body.user_id,
+      },
+    );
+
+    if (resolveError) {
+      return error(resolveError.message, 500);
+    }
+    if (!resolved) {
+      return error("That user could not be found.", 404);
+    }
+
+    email = String(resolved).toLowerCase();
+  } else {
+    email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  }
+
+  if (!email || !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)) {
+    return error("Enter a valid email address.", 400);
+  }
+
+  // Already a member? Say so plainly instead of creating a dead invitation.
+  const { data: existingMember } = await supabase
+    .from("organization_members")
+    .select("user_id, profiles ( full_name )")
+    .eq("organization_id", organizationId)
+    .eq("user_id", typeof body.user_id === "string" ? body.user_id : "")
+    .maybeSingle();
+
+  if (existingMember) {
+    return error("That person is already a member of this organization.", 409);
   }
 
   // Already a pending invitation? Surface a friendly conflict rather than a

@@ -112,3 +112,34 @@ export async function listOrganizationInvitations(
 export function invitationLink(token: string, origin: string): string {
   return `${origin.replace(/\/$/, "")}/invitations/${token}`;
 }
+
+/** An incoming invitation request shown in the invitee's dashboard. */
+export interface IncomingInvitation {
+  id: string;
+  organization_id: string;
+  organization_name: string;
+  organization_slug: string;
+  role: OrganizationRole;
+  invited_by_name: string;
+  created_at: string;
+  expires_at: string;
+}
+
+/**
+ * Invitation requests addressed to the signed-in user.
+ *
+ * Backed by the `my_pending_invitations()` database function: the invitee
+ * is not yet a member, so they cannot read the organization row or the
+ * inviter's profile directly. The function is `security definer`, filters
+ * on the caller's own verified email, and never returns the token.
+ */
+export async function listMyPendingInvitations(): Promise<IncomingInvitation[]> {
+  const supabase = await createClient();
+
+  const { data } = await supabase.rpc("my_pending_invitations");
+
+  return ((data as IncomingInvitation[] | null) ?? []).map((row) => ({
+    ...row,
+    role: isOrganizationRole(row.role) ? row.role : "viewer",
+  }));
+}

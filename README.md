@@ -416,7 +416,10 @@ pytest database/tests
 
 The harness stubs Supabase's `auth` schema (`auth.users`, `auth.uid()`,
 `auth.jwt()`), applies every migration in order, and then asserts the
-database — not just the application — refuses privilege escalation.
+database — not just the application — refuses privilege escalation:
+member management (`test_member_management.py`) and the in-app invitation
+requests, including directory-enumeration limits
+(`test_invitation_requests.py`).
 
 ### Frontend
 
@@ -546,25 +549,42 @@ database (`organization_members_role_check`) and mirrored in
 | Grant or revoke the `owner` role | — | — | — | ✅ |
 | Delete the organization | — | — | — | ✅ |
 
-**Adding members.** An admin or owner opens
-`/organizations/{id}/members` and invites by email. If the address already
-belongs to a registered user they are added immediately; otherwise a
-pending invitation is created and the inviter gets a one-time link
-(`/invitations/{token}`) to share. Invitations expire after 14 days, can be
-revoked, and can only be accepted by the address they were issued to.
+**Adding members.** Works like a social follow request. An admin or owner
+uses **Add a member** on the dashboard (or
+`/organizations/{id}/members`), searches for the person, picks a role and
+sends the request. The invitee sees it under **Invitations** on their own
+dashboard the next time they sign in and can **Accept** or **Decline** —
+no email round-trip needed.
+
+If the address does not belong to an account yet, the inviter also gets a
+one-time link (`/invitations/{token}`) to share. Invitations expire after
+14 days, can be revoked, can only be accepted by the address they were
+issued to, and someone who declined can be invited again.
+
+**Finding people.** The picker is deliberately *not* a browsable user
+directory. `search_invitable_users` requires the caller to be an
+admin/owner of the target organization, matches only on a full exact email
+address or a 3+ character name prefix, and never returns anybody's email
+address to the browser. Resolving a picked user to an address happens
+server-side via `resolve_invitable_email`, which repeats the admin check.
 
 **Invariants enforced by the database** (migration 015, trigger
 `organization_members_guard`) — not merely by the UI or API:
 
 - an organization always keeps at least one owner (the last owner cannot be
   demoted, removed, or leave),
-- only an owner may grant or revoke `owner`,
+- only an owner may grant or revoke `owner` — including through an
+  invitation: joining via an `owner` invite is refused unless whoever
+  issued it is still an owner,
 - nobody may change their own role, assign a role above their own, or act on
   a higher-ranked member,
 - any member may leave voluntarily (`leave_organization`),
-- membership rows are never inserted from the browser: `create_organization`
-  and `accept_invitation` are `security definer` functions that derive the
-  user from `auth.uid()`.
+- membership rows are never inserted from the browser:
+  `create_organization`, `accept_invitation` and `respond_to_invitation`
+  are `security definer` functions that derive the user from `auth.uid()`,
+- a user can only ever list or answer their *own* invitations
+  (`my_pending_invitations` / `respond_to_invitation` pin every query to
+  the caller's verified email, and never expose the invitation token).
 
 The frontend helpers in `lib/organizations/rbac.ts` only shape the UI; RLS,
 the guard trigger, and `backend/app/core/rbac.py` are the security boundary.
