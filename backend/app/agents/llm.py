@@ -134,12 +134,19 @@ def chat(
     model: str | None = None,
     timeout: float | None = None,
     max_retries: int | None = None,
+    usage_out: dict | None = None,
 ) -> str:
     """Run a chat completion and return the assistant text.
 
     ``timeout`` bounds the HTTP request (default ``OPENAI_TIMEOUT_SECONDS``)
     and ``max_retries`` the number of extra attempts made for transient
     provider errors (default ``RESEARCH_LLM_MAX_RETRIES``).
+
+    When ``usage_out`` (a dict) is given it is filled with the call's token
+    usage — ``{"input", "output", "total"}`` from the provider, estimated
+    from character counts when the provider omits usage — so callers can
+    enforce per-run / per-user token budgets with real numbers. Cache hits
+    consume no tokens and leave the dict empty.
     """
     client = get_openai_client()
     if client is None:
@@ -214,7 +221,17 @@ def chat(
         logger.exception("OpenAI chat completion failed.")
         raise ResearchLLMError(f"Model call failed: {exc}") from exc
 
-    generation.update(output=result, usage_details=_usage_details(last_response))
+    usage = _usage_details(last_response)
+    if usage is None:
+        # Provider omitted usage: estimate (≈4 characters per token) so
+        # budgets account for the call instead of silently skipping it.
+        chars = sum(len(str(m.get("content", ""))) for m in messages) + len(result)
+        usage = {"input": max(1, chars // 4), "output": max(1, len(result) // 4)}
+        usage["total"] = usage["input"] + usage["output"]
+    if usage_out is not None:
+        usage_out.update(usage)
+
+    generation.update(output=result, usage_details=usage)
     generation.end()
 
     # Store in cache for future identical calls.

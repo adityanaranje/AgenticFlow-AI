@@ -197,6 +197,31 @@ class Settings(BaseSettings):
     # version — useful in development); the SDK default is 60.
     prompt_cache_ttl_seconds: int = Field(default=60, alias="PROMPT_CACHE_TTL_SECONDS")
 
+    # LLM usage guardrails (per user, Redis-backed; 0 = unlimited).
+    # These stop one user from burning unbounded model tokens.
+    llm_user_token_limit_hourly: int = Field(
+        default=100_000, alias="LLM_USER_TOKEN_LIMIT_HOURLY"
+    )
+    llm_user_token_limit_daily: int = Field(
+        default=500_000, alias="LLM_USER_TOKEN_LIMIT_DAILY"
+    )
+    # Max research runs a user may have queued/in-flight at the same time.
+    llm_user_max_concurrent_runs: int = Field(
+        default=2, alias="LLM_USER_MAX_CONCURRENT_RUNS"
+    )
+    # Token budget for a single research run (one run = a chain of many
+    # model calls: planner, evidence batches, gap loops, synthesis, judge).
+    llm_run_token_budget: int = Field(default=100_000, alias="LLM_RUN_TOKEN_BUDGET")
+    # Redis key TTL (seconds) marking a run's concurrency slot; releases
+    # slots of runs whose process died mid-flight.
+    research_run_slot_ttl_seconds: int = Field(
+        default=3600, alias="RESEARCH_RUN_SLOT_TTL_SECONDS"
+    )
+    # Output guardrail: hard cap on the stored report length, in characters.
+    research_max_report_chars: int = Field(
+        default=100_000, alias="RESEARCH_MAX_REPORT_CHARS"
+    )
+
     # MCP
     mcp_host: str = Field(default="0.0.0.0", alias="MCP_HOST")
     mcp_port: int = Field(default=8001, alias="MCP_PORT")

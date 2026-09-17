@@ -18,3 +18,19 @@ class ConflictError(AgentFlowError):
 
 class ValidationError(AgentFlowError):
     """Raised when application data fails validation."""
+
+
+class AdmissionError(AgentFlowError):
+    """Raised when a request is rejected by a usage guardrail.
+
+    Token quota (hourly/daily per user) or the per-user concurrent-run
+    limit. The API maps this to HTTP 429.
+    """
+
+
+class BudgetExhaustedError(AgentFlowError):
+    """Raised mid-run when the run's token budget is reached.
+
+    The run is marked failed with a clear message; the work already done
+    is persisted, so nothing is silently lost.
+    """

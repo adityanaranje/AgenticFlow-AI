@@ -170,6 +170,12 @@ npm install
 | `RESEARCH_UNCLAIMED_FALLBACK_SECONDS` | backend |         | Take over a run no worker claimed (default `15`; `0` = off) |
 | `REPORT_SOURCE_BATCH_SIZE`        | backend    |          | Rows per report source insert (default `100`) |
 | `EMBEDDING_CACHE_TTL_SECONDS`     | backend    |          | TTL for cached query embeddings (default `3600`) |
+| `LLM_USER_TOKEN_LIMIT_HOURLY`     | backend    |          | Per-user hourly token quota, `0` = unlimited (default `100000`) |
+| `LLM_USER_TOKEN_LIMIT_DAILY`      | backend    |          | Per-user daily token quota, `0` = unlimited (default `500000`) |
+| `LLM_USER_MAX_CONCURRENT_RUNS`    | backend    |          | Max queued/in-flight research runs per user, `0` = unlimited (default `2`) |
+| `LLM_RUN_TOKEN_BUDGET`            | backend    |          | Token budget for one research run, `0` = unlimited (default `100000`) |
+| `RESEARCH_RUN_SLOT_TTL_SECONDS`   | backend    |          | TTL for a run's concurrency slot (default `3600`) |
+| `RESEARCH_MAX_REPORT_CHARS`       | backend    |          | Output guardrail: max stored report length (default `100000`) |
 | `LANGFUSE_HOST`                   | backend    |    🔒    | Default `https://cloud.langfuse.com`      |
 | `LANGFUSE_PUBLIC_KEY`             | backend    |    🔒    | Backend-only                              |
 | `LANGFUSE_SECRET_KEY`             | backend    |    🔒    | **Never expose to the browser**           |
@@ -185,6 +191,27 @@ must never be given a `NEXT_PUBLIC_` prefix or referenced by frontend code.
 split. Supabase renamed "anon" to "publishable" (and "service_role" to
 "secret", `sb_secret_...`); both frontend variable names are accepted and the
 legacy keys still work while enabled, but new projects only get the new ones.
+
+### 5.1 LLM usage guardrails
+
+Research runs make a chain of model calls, so per-user token spend is
+bounded at three levels (all Redis-backed, all `0` = unlimited; degrades to
+"allowed" when Redis is down, so a missing Redis never breaks dev setups):
+
+| Level            | Setting                        | Enforced where        | On breach                                    |
+| ---------------- | ------------------------------ | --------------------- | -------------------------------------------- |
+| Per user / hour  | `LLM_USER_TOKEN_LIMIT_HOURLY`  | dispatch (API)        | `429` with the window + used/limit details   |
+| Per user / day   | `LLM_USER_TOKEN_LIMIT_DAILY`   | dispatch (API)        | `429` as above                               |
+| Per user, runs   | `LLM_USER_MAX_CONCURRENT_RUNS` | dispatch (API)        | `429` "already have N runs in progress"      |
+| Per run          | `LLM_RUN_TOKEN_BUDGET`         | worker, before each model call | run fails with a clear error; work so far is persisted |
+
+Tokens are the **real usage** reported by the model provider (estimated
+from character counts only when a provider omits usage); cached LLM
+responses consume none. Related input/output guardrails: the research
+question is capped at 4000 characters, client-supplied run config is
+whitelisted + clamped (`top_k ≤ 50`, `max_subquestions ≤ 10`,
+`max_iterations ≤ 5`, `max_chunks ≤ 500`), and stored reports are truncated
+at `RESEARCH_MAX_REPORT_CHARS` with a visible marker.
 
 ## 6. Local development
 

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.auth import Membership
+from app.core.exceptions import AdmissionError
 from app.core.rbac import require_researcher, require_viewer
 from app.db.repositories.research import ResearchRepository
 from app.services import research_service
@@ -38,12 +39,16 @@ def create_research(
     if not body.query.strip():
         raise HTTPException(status_code=400, detail="Query is required.")
 
-    run = research_service.create_research(
-        organization_id=organization_id,
-        user_id=membership.user.id,  # from JWT, never the client
-        question=body.query.strip(),
-        config=body.config or {},
-    )
+    try:
+        run = research_service.create_research(
+            organization_id=organization_id,
+            user_id=membership.user.id,  # from JWT, never the client
+            question=body.query.strip(),
+            config=body.config or {},
+        )
+    except AdmissionError as exc:
+        # Usage guardrail: token quota or concurrent-run limit reached.
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     return {
         "id": run["id"],
         "status": run["status"],

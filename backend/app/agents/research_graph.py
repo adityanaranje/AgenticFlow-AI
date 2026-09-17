@@ -45,10 +45,11 @@ from app.agents.nodes.retriever import retriever_node
 from app.agents.nodes.synthesis import synthesis_node
 from app.agents.state import ResearchState, RetrievedChunk
 from app.core.config import settings
+from app.core.exceptions import BudgetExhaustedError
 from app.core.logging import get_logger
 from app.core.observability import current_observation, user_scope
 from app.db.repositories.research import ResearchRepository
-from app.services import background, job_queue, report_service, retrieval
+from app.services import background, job_queue, llm_guardrails, report_service, retrieval
 
 logger = get_logger(__name__)
 
@@ -106,6 +107,38 @@ def _default_llm(messages: list[dict[str, str]]) -> str:
     return llm_mod.chat(messages)
 
 
+def _make_budgeted_llm(state: ResearchState):
+    """Wrap the model call with the per-run token budget + user accounting.
+
+    Every call's real usage (from the provider, estimated when absent) is
+    added to the run total and to the user's hourly/daily counters. When
+    the run budget is reached, the next model call raises
+    :class:`BudgetExhaustedError` and the run fails with a clear message —
+    instead of silently spending more tokens.
+    """
+    budget = max(0, int(state.config.get("run_token_budget", settings.llm_run_token_budget)))
+    used = {"tokens": 0}
+    user_id = state.user_id
+
+    def llm_with_budget(messages: list[dict[str, str]]) -> str:
+        if budget > 0 and used["tokens"] >= budget:
+            raise BudgetExhaustedError(
+                f"Research token budget of {budget} reached "
+                f"({used['tokens']} tokens used). The run was stopped to "
+                "protect against unbounded token spend; retry with a "
+                "narrower question or raise LLM_RUN_TOKEN_BUDGET."
+            )
+        usage: dict = {}
+        text = llm_mod.chat(messages, usage_out=usage)
+        tokens = int(usage.get("total") or 0)
+        if tokens:
+            used["tokens"] += tokens
+            llm_guardrails.record_user_tokens(user_id, tokens)
+        return text
+
+    return llm_with_budget
+
+
 def _build_services(state: ResearchState, run_id: str, organization_id: str, repo: ResearchRepository) -> ResearchServices:
     """Services wired to the DB-backed persist/cancel for production runs."""
 
@@ -135,7 +168,7 @@ def _build_services(state: ResearchState, run_id: str, organization_id: str, rep
             return False
 
     services = ResearchServices(
-        llm=_default_llm,
+        llm=_make_budgeted_llm(state),
         retrieve=_default_retrieve,
         retrieve_many=_default_retrieve_many,
         config=state.config,
@@ -198,7 +231,13 @@ def run_research(research_id: str) -> dict[str, Any]:
         # LLM generations recorded by app.agents.llm.chat attach under the
         # right node automatically. Node spans carry compact input/output
         # summaries; the full model I/O lives on the generations.
-        run_meta = {"research_id": run["id"], "organization_id": organization_id}
+        run_meta = {
+            "research_id": run["id"],
+            "organization_id": organization_id,
+            "run_token_budget": int(
+                state.config.get("run_token_budget", settings.llm_run_token_budget)
+            ),
+        }
         with user_scope(run.get("user_id")):
             with current_observation("research.run", metadata=run_meta):
                 # ---- planner ----
@@ -339,7 +378,10 @@ def run_research(research_id: str) -> dict[str, Any]:
         return {"status": "completed", "report_id": stored.get("id")}
 
     except Exception as exc:
-        logger.exception("Research %s failed", run["id"])
+        if isinstance(exc, BudgetExhaustedError):
+            logger.warning("Research %s stopped by token budget: %s", run["id"], exc)
+        else:
+            logger.exception("Research %s failed", run["id"])
         safe = (str(exc) or "Research failed.").strip().replace("\n", " ")[:1000]
         state.status = "failed"  # keep the persisted state consistent with the row
         try:
@@ -358,6 +400,13 @@ def run_research(research_id: str) -> dict[str, Any]:
         except Exception:
             logger.exception("Failed to record research failure for %s", run["id"])
         return {"status": "failed", "error": safe}
+    finally:
+        # Always free the user's concurrent-run slot, however the run ended
+        # (completed, failed, cancelled, or budget-exhausted).
+        try:
+            llm_guardrails.release_run_slot(state.user_id, run["id"])
+        except Exception:
+            logger.exception("Failed to release run slot for %s", run["id"])
 
 
 def _cancel(repo, run_id, org, state) -> None:

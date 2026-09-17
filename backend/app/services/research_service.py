@@ -25,9 +25,37 @@ from typing import Any
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.db.repositories.research import ResearchRepository
-from app.services import background, job_queue
+from app.services import background, job_queue, llm_guardrails
 
 logger = get_logger(__name__)
+
+# Input guardrail: the only per-run config keys clients may set, and the
+# sane bounds they are clamped to. Unbounded values (huge top_k / chunk
+# counts) would quietly multiply token spend, so they are capped here.
+_CONFIG_BOUNDS = {
+    "top_k": (1, 50),
+    "max_subquestions": (1, 10),
+    "max_iterations": (1, 5),
+    "max_chunks": (1, 500),
+}
+
+
+def sanitize_research_config(config: dict | None) -> dict:
+    """Return a safe per-run config: known numeric keys clamped to bounds.
+
+    Unknown keys are dropped — clients cannot inject model names, budgets
+    or anything else the platform does not explicitly allow.
+    """
+    safe: dict = {}
+    for key, (low, high) in _CONFIG_BOUNDS.items():
+        if config is None or key not in config:
+            continue
+        try:
+            value = int(config[key])
+        except (TypeError, ValueError):
+            continue
+        safe[key] = max(low, min(high, value))
+    return safe
 
 
 def _run_inline(research_id: str) -> None:
@@ -72,18 +100,38 @@ def create_research(
     question: str,
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create a research run (status queued) and enqueue background execution."""
+    """Create a research run (status queued) and enqueue background execution.
+
+    Usage guardrails (token quotas + concurrent-run limit) are enforced
+    here; a rejected run is marked ``failed`` with the reason instead of
+    being silently dropped. Raises :class:`AdmissionError` for the API to
+    map to HTTP 429.
+    """
     repo = ResearchRepository()
     run = repo.create(
         organization_id=organization_id,
         user_id=user_id,
         question=question.strip(),
-        config=config or {},
+        config=sanitize_research_config(config),
     )
     if not run:
         raise RuntimeError("Could not create the research run.")
 
     research_id = run["id"]
+    try:
+        llm_guardrails.admit_research_run(user_id, research_id)
+    except Exception as exc:
+        # The row must not linger as "queued" with nothing to process it.
+        try:
+            repo.update(
+                research_id,
+                organization_id,
+                {"status": "failed", "error": str(exc)[:500]},
+            )
+        except Exception:
+            logger.exception("Could not mark rejected run %s as failed.", research_id)
+        raise
+
     if job_queue.enqueue_research(research_id):
         delay = settings.research_unclaimed_fallback_seconds
         if delay > 0:
