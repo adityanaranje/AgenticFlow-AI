@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 /**
  * AgentFlow AI — Respond to an invitation request (Phase 3, §16).
  *
- * POST /api/invitations/{invitationId}/respond   { "accept": true | false }
+ * POST /api/invitations/{invitationId}/respond   (id, from the dashboard)   { "accept": true | false }
  *
  * Powers the accept/decline buttons on the dashboard. Delegates to the
  * secured `respond_to_invitation` database function, which requires an
@@ -19,9 +19,11 @@ export const dynamic = "force-dynamic";
 
 export async function POST(
   request: Request,
-  { params }: { params: Promise<{ invitationId: string }> },
+  { params }: { params: Promise<{ invitation: string }> },
 ) {
-  const { invitationId } = await params;
+  // This route is keyed by the invitation *id* (the dashboard inbox
+  // never handles the secret token).
+  const { invitation: invitationId } = await params;
 
   if (!getSupabasePublicEnv()) {
     return NextResponse.json(

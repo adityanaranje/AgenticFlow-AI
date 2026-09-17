@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 /**
  * AgentFlow AI — Invitation acceptance (Phase 3, §16).
  *
- * POST /api/invitations/{token}/accept
+ * POST /api/invitations/{token}/accept   (token = the secret link)
  *
  * Delegates entirely to the secured `accept_invitation` database function,
  * which runs `security definer` and:
@@ -22,9 +22,10 @@ export const dynamic = "force-dynamic";
 
 export async function POST(
   _request: Request,
-  { params }: { params: Promise<{ token: string }> },
+  { params }: { params: Promise<{ invitation: string }> },
 ) {
-  const { token } = await params;
+  // This route is keyed by the secret invitation *token*.
+  const { invitation: token } = await params;
 
   if (!getSupabasePublicEnv()) {
     return NextResponse.json(
