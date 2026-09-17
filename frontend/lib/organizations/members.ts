@@ -28,7 +28,11 @@ export interface OrganizationMember {
   avatar_url: string | null;
 }
 
-export type InvitationStatus = "pending" | "accepted" | "revoked";
+export type InvitationStatus =
+  | "pending"
+  | "accepted"
+  | "revoked"
+  | "declined";
 
 export interface OrganizationInvitation {
   id: string;
@@ -38,6 +42,8 @@ export interface OrganizationInvitation {
   status: InvitationStatus;
   expires_at: string;
   created_at: string;
+  /** When the invitee accepted or declined; null while still pending. */
+  responded_at: string | null;
 }
 
 function asObject<T>(value: T | T[] | null | undefined): T | null {
@@ -79,8 +85,12 @@ export async function listOrganizationMembers(
 }
 
 /**
- * Pending invitations for an organization. RLS restricts the rows to
- * members; only admins/owners are shown this list in the UI.
+ * Invitations sent by an organization. Pass `null` for `status` to get
+ * the full history (pending + answered), which is what the members page
+ * shows so senders can see who accepted or declined.
+ *
+ * RLS restricts the rows to members; only admins/owners are shown this
+ * list in the UI.
  */
 export async function listOrganizationInvitations(
   organizationId: string,
@@ -90,7 +100,9 @@ export async function listOrganizationInvitations(
 
   let query = supabase
     .from("organization_invitations")
-    .select("id, organization_id, email, role, status, expires_at, created_at")
+    .select(
+      "id, organization_id, email, role, status, expires_at, created_at, responded_at",
+    )
     .eq("organization_id", organizationId);
 
   if (status) query = query.eq("status", status);
@@ -105,6 +117,7 @@ export async function listOrganizationInvitations(
     status: (row.status as InvitationStatus) ?? "pending",
     expires_at: row.expires_at as string,
     created_at: row.created_at as string,
+    responded_at: (row.responded_at as string | null) ?? null,
   }));
 }
 

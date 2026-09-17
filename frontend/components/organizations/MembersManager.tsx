@@ -39,11 +39,20 @@ export interface MemberView {
   full_name: string | null;
 }
 
+export type InvitationStatus =
+  | "pending"
+  | "accepted"
+  | "revoked"
+  | "declined";
+
 export interface InvitationView {
   id: string;
   email: string;
   role: OrganizationRole;
+  status: InvitationStatus;
   expires_at: string;
+  created_at: string;
+  responded_at: string | null;
 }
 
 const roleStyles: Record<string, string> = {
@@ -60,6 +69,57 @@ const roleHelp: Record<OrganizationRole, string> = {
   researcher: "Upload documents and run research.",
   viewer: "Read-only access to documents, research and reports.",
 };
+
+/** How each sent-request outcome is presented. */
+const statusStyles: Record<string, string> = {
+  pending:
+    "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+  accepted:
+    "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
+  declined: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+  revoked: "bg-zinc-100 text-zinc-600 dark:bg-zinc-500/15 dark:text-zinc-300",
+  expired: "bg-zinc-100 text-zinc-600 dark:bg-zinc-500/15 dark:text-zinc-300",
+};
+
+function formatDate(iso: string | null): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString();
+}
+
+/**
+ * A pending invitation past its expiry is effectively dead, so surface
+ * that rather than implying the person can still accept.
+ */
+function effectiveStatus(invitation: InvitationView): string {
+  if (
+    invitation.status === "pending" &&
+    new Date(invitation.expires_at).getTime() <= Date.now()
+  ) {
+    return "expired";
+  }
+  return invitation.status;
+}
+
+function statusLabel(invitation: InvitationView): string {
+  const status = effectiveStatus(invitation);
+  const when = formatDate(invitation.responded_at);
+
+  switch (status) {
+    case "accepted":
+      return when ? `Accepted ${when}` : "Accepted";
+    case "declined":
+      return when ? `Declined ${when}` : "Declined";
+    case "revoked":
+      return "Revoked";
+    case "expired":
+      return `Expired ${formatDate(invitation.expires_at)}`;
+    default:
+      return `Sent ${formatDate(invitation.created_at)} · expires ${formatDate(
+        invitation.expires_at,
+      )}`;
+  }
+}
 
 export default function MembersManager({
   organizationId,
@@ -102,6 +162,10 @@ export default function MembersManager({
 
   const ownerCount = members.filter((m) => m.role === "owner").length;
 
+  const pendingCount = invitations.filter(
+    (invitation) => effectiveStatus(invitation) === "pending",
+  ).length;
+
   function reset() {
     setError(null);
     setNotice(null);
@@ -141,7 +205,10 @@ export default function MembersManager({
         return;
       }
 
-      setInvitations((current) => [payload.invitation as InvitationView, ...current]);
+      setInvitations((current) => [
+        payload.invitation as InvitationView,
+        ...current,
+      ]);
       setInviteUrl(payload.invite_url ?? null);
       setNotice(`Invitation created for ${payload.invitation.email}.`);
       setEmail("");
@@ -250,7 +317,13 @@ export default function MembersManager({
         return;
       }
 
-      setInvitations((current) => current.filter((i) => i.id !== invitationId));
+      setInvitations((current) =>
+        current.map((item) =>
+          item.id === invitationId
+            ? { ...item, status: "revoked" as const, responded_at: null }
+            : item,
+        ),
+      );
       setNotice(`Invitation to ${invitedEmail} was revoked.`);
       router.refresh();
     } catch {
@@ -492,57 +565,90 @@ export default function MembersManager({
         </div>
       </section>
 
-      {/* Pending invitations */}
+      {/* Sent requests */}
       {canManage && invitations.length > 0 && (
         <section>
-          <h2 className="mb-3 text-sm font-semibold text-zinc-900 dark:text-white">
-            Pending invitations ({invitations.length})
-          </h2>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-white">
+              Sent requests ({invitations.length})
+            </h2>
+            {pendingCount > 0 && (
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                {pendingCount} awaiting a reply
+              </span>
+            )}
+          </div>
 
           <div className="card divide-y divide-zinc-100 dark:divide-zinc-800">
-            {invitations.map((invitation) => (
-              <div
-                key={invitation.id}
-                className="flex flex-wrap items-center justify-between gap-3 px-6 py-4"
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
-                    <Mail className="h-4 w-4" aria-hidden="true" />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-100">
-                      {invitation.email}
-                    </p>
-                    <p className="text-xs text-zinc-400">
-                      Expires{" "}
-                      {new Date(invitation.expires_at).toLocaleDateString()}
-                    </p>
+            {invitations.map((invitation) => {
+              const status = effectiveStatus(invitation);
+              const isPending = status === "pending";
+
+              return (
+                <div
+                  key={invitation.id}
+                  className="flex flex-wrap items-center justify-between gap-3 px-6 py-4"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+                        statusStyles[status] ?? statusStyles.pending
+                      }`}
+                    >
+                      {status === "accepted" ? (
+                        <Check className="h-4 w-4" aria-hidden="true" />
+                      ) : (
+                        <Mail className="h-4 w-4" aria-hidden="true" />
+                      )}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-100">
+                        {invitation.email}
+                      </p>
+                      <p className="text-xs text-zinc-400">
+                        {statusLabel(invitation)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${
+                        statusStyles[status] ?? statusStyles.pending
+                      }`}
+                    >
+                      {status}
+                    </span>
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${
+                        roleStyles[invitation.role] ?? roleStyles.viewer
+                      }`}
+                    >
+                      {invitation.role}
+                    </span>
+                    {isPending && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleRevoke(invitation.id, invitation.email)
+                        }
+                        disabled={busyId === invitation.id}
+                        className="btn-secondary px-3 py-1.5 text-xs"
+                      >
+                        {busyId === invitation.id ? (
+                          <Loader2
+                            className="h-3 w-3 animate-spin"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          "Revoke"
+                        )}
+                      </button>
+                    )}
                   </div>
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${
-                      roleStyles[invitation.role] ?? roleStyles.viewer
-                    }`}
-                  >
-                    {invitation.role}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => handleRevoke(invitation.id, invitation.email)}
-                    disabled={busyId === invitation.id}
-                    className="btn-secondary px-3 py-1.5 text-xs"
-                  >
-                    {busyId === invitation.id ? (
-                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-                    ) : (
-                      "Revoke"
-                    )}
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}

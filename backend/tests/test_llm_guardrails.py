@@ -265,7 +265,9 @@ def test_quota_endpoint_reports_remaining(monkeypatch):
     membership = Membership(
         user=AuthenticatedUser(id="u-quota"),
         organization_id="org-1",
-        role="viewer",
+        # Researcher+ : the quota constrains starting a run, so a viewer
+        # (who can never spend it) is refused - see the 403 test below.
+        role="researcher",
     )
     app.dependency_overrides[require_organization_membership] = lambda: membership
     try:
@@ -279,6 +281,37 @@ def test_quota_endpoint_reports_remaining(monkeypatch):
     assert body["hourly"] == {"used": 250, "limit": 1000, "remaining": 750}
     assert body["daily"] == {"used": 250, "limit": 2000, "remaining": 1750}
     assert body["concurrent_runs"]["active"] == 0
+
+
+def test_quota_endpoint_is_hidden_from_viewers(monkeypatch):
+    """A viewer cannot start research, so the token budget is not theirs
+    to see. The UI hides the card; the API must refuse it too, otherwise
+    the data is merely hidden client-side."""
+    from fastapi.testclient import TestClient
+
+    from app.core.auth import (
+        AuthenticatedUser,
+        Membership,
+        require_organization_membership,
+    )
+    from app.main import app
+
+    fake = FakeRedis()
+    monkeypatch.setattr(guard, "get_redis_client", lambda: fake)
+
+    membership = Membership(
+        user=AuthenticatedUser(id="u-viewer"),
+        organization_id="org-1",
+        role="viewer",
+    )
+    app.dependency_overrides[require_organization_membership] = lambda: membership
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/v1/organizations/org-1/research/quota")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403, response.text
 
 
 # --- input guardrail: config sanitization ----------------------------------------

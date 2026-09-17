@@ -71,13 +71,17 @@ def list_research(
 @router.get("/quota")
 def get_research_quota(
     organization_id: str,
-    membership: Membership = Depends(require_viewer()),
+    membership: Membership = Depends(require_researcher()),
 ) -> dict:
     """Token usage + remaining quota for the authenticated user.
 
     Reports the hourly/daily token windows (used / limit / remaining),
     the active concurrent-run count, and the per-run token budget. This is
     the user's "how much do I have left?" view — poll it from the UI.
+
+    Requires researcher+ : the quota only constrains *starting* a run, so
+    it is meaningless to a viewer, who can never spend it. Gating it here
+    matches the UI, which hides the token budget card from viewers.
     """
     return llm_guardrails.user_quota_status(membership.user.id)
 

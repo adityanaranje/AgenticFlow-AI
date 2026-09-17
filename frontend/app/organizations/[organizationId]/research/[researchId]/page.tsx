@@ -9,6 +9,7 @@ import {
   getUserOrganizations,
   requireOrganizationMembership,
 } from "@/lib/organizations/server";
+import { canResearch } from "@/lib/organizations/rbac";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +21,8 @@ export default async function ResearchDetailPage({
   params: Promise<{ organizationId: string; researchId: string }>;
 }) {
   const { organizationId, researchId } = await params;
-  const { organization } = await requireOrganizationMembership(organizationId);
+  const { organization, membership } =
+    await requireOrganizationMembership(organizationId);
   const [allMemberships, supabase] = await Promise.all([getUserOrganizations(), createClient()]);
 
   const { data: run } = await supabase
@@ -31,6 +33,9 @@ export default async function ResearchDetailPage({
     .maybeSingle();
 
   const orgPath = `/organizations/${organization.id}`;
+
+  // Viewers can read a run but never start one, so hide their quota.
+  const showQuota = canResearch(membership.role);
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -52,7 +57,7 @@ export default async function ResearchDetailPage({
           </div>
         ) : (
           <>
-            <TokenQuotaCard organizationId={organization.id} />
+            {showQuota && <TokenQuotaCard organizationId={organization.id} />}
             <ResearchRunTracker
               organizationId={organization.id}
               runId={run.id}

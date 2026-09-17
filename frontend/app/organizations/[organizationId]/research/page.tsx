@@ -9,6 +9,7 @@ import {
   getUserOrganizations,
   requireOrganizationMembership,
 } from "@/lib/organizations/server";
+import { canResearch as canRunResearch } from "@/lib/organizations/rbac";
 import type { OrganizationRole } from "@/lib/organizations/types";
 import { createClient } from "@/lib/supabase/server";
 
@@ -62,7 +63,9 @@ export default async function ResearchPage({
 
   const runs = (data ?? []) as RunRow[];
   const role = membership.role as OrganizationRole;
-  const canResearch = ["owner", "admin", "researcher"].includes(role);
+  // Viewers cannot start a run, so the token budget is meaningless to
+  // them — it is their *own* per-user quota, never spent from this page.
+  const canResearch = canRunResearch(role);
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -84,7 +87,7 @@ export default async function ResearchPage({
           </p>
         </div>
 
-        <TokenQuotaCard organizationId={organization.id} />
+        {canResearch && <TokenQuotaCard organizationId={organization.id} />}
 
         <section className="card p-6">
           <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900 dark:text-white">

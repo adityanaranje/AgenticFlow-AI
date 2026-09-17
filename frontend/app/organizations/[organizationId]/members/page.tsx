@@ -45,8 +45,10 @@ export default async function MembersPage({
     getCurrentUser(),
     getUserOrganizations(),
     listOrganizationMembers(organization.id),
+    // `null` = the full history, so senders can see who accepted,
+    // declined or let an invitation expire — not just what is pending.
     canManageOrganization(role)
-      ? listOrganizationInvitations(organization.id, "pending")
+      ? listOrganizationInvitations(organization.id, null)
       : Promise.resolve([]),
   ]);
 
@@ -85,7 +87,10 @@ export default async function MembersPage({
             id: invitation.id,
             email: invitation.email,
             role: invitation.role,
+            status: invitation.status,
             expires_at: invitation.expires_at,
+            created_at: invitation.created_at,
+            responded_at: invitation.responded_at,
           }))}
         />
       </main>
