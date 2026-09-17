@@ -28,6 +28,7 @@ from app.cache.redis_client import get_redis_client
 from app.core.config import settings
 from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
+from app.core.observability import llm_generation
 from app.core.retry import call_with_retries
 from app.llm.client import get_openai_client
 
@@ -49,6 +50,26 @@ def _log_retry(attempt: int, exc: BaseException, delay: float) -> None:
     logger.warning(
         "Model call failed (attempt %d): %s — retrying in %.1fs", attempt, exc, delay
     )
+
+
+def _usage_details(response: Any) -> dict[str, int] | None:
+    """Map an OpenAI response's token usage onto the SDK's usage_details
+    keys (``input``/``output``/``total``), or ``None`` when unavailable."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    try:
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if not prompt_tokens and not completion_tokens:
+        return None
+    return {
+        "input": prompt_tokens,
+        "output": completion_tokens,
+        "total": prompt_tokens + completion_tokens,
+    }
 
 
 def _llm_cache_key(
@@ -147,7 +168,14 @@ def chat(
         logger.debug("LLM cache hit for %s", cache_key[:24])
         return cached
 
+    # Record the model call as a Langfuse *generation* so traces carry the
+    # model, tokens, cost inputs and the prompt link (prompt_scope). It
+    # parents itself onto the active node span when one is in flight, and
+    # degrades to a no-op when Langfuse is not configured.
+    last_response: Any = None
+
     def _call() -> str:
+        nonlocal last_response
         response = client.chat.completions.create(
             model=resolved_model,
             messages=messages,
@@ -155,6 +183,7 @@ def chat(
             max_tokens=max_tokens,
             timeout=request_timeout,
         )
+        last_response = response
         if not response or not response.choices:
             raise ResearchLLMError("Model returned no response.")
 
@@ -165,15 +194,28 @@ def chat(
             raise ResearchLLMError("Model returned an empty response.")
         return text
 
+    generation = llm_generation(
+        "openai.chat",
+        model=resolved_model,
+        input_data=messages,
+        metadata={"temperature": temperature, "max_tokens": max_tokens},
+    )
     try:
         result = call_with_retries(
             _call, attempts=attempts, sleep=_sleep, on_retry=_log_retry
         )
     except ResearchLLMError:
+        generation.update(level="error")
+        generation.end()
         raise
     except Exception as exc:  # network / rate-limit / malformed
+        generation.update(level="error")
+        generation.end()
         logger.exception("OpenAI chat completion failed.")
         raise ResearchLLMError(f"Model call failed: {exc}") from exc
+
+    generation.update(output=result, usage_details=_usage_details(last_response))
+    generation.end()
 
     # Store in cache for future identical calls.
     _llm_cache_set(cache_key, result)

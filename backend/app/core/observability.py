@@ -6,17 +6,26 @@ installed SDK differs), so tracing never blocks ingestion or research.
 Langfuse v4 (the installed version) uses an observation-based API:
 
     - ``client.start_observation()`` creates a root span (the "trace").
-    - ``parent.start_observation()`` creates a child span.
+    - ``client.start_as_current_observation()`` creates a span that becomes
+      the *active* OpenTelemetry span, so observations created deeper in
+      the call stack (e.g. LLM generations from ``app.agents.llm.chat``)
+      nest under it automatically.
     - ``as_type`` controls the observation kind (span, generation, etc).
-    - ``TraceContext`` links observations to an existing trace.
+    - ``propagate_attributes()`` links trace-level attributes — most
+      importantly the ``production`` prompt (``prompt``) and ``user_id`` —
+      to every observation created within its context.  The prompt link is
+      what fills Langfuse UI's "Prompt Name" column on generations.
 
-Privacy: callers pass only non-sensitive ``metadata`` (ids, counts, sizes).
-Raw file contents and secrets are never forwarded to these helpers.
+Privacy: span inputs/outputs carry only summaries (ids, questions,
+counts, sizes) — never secrets. LLM *generations* do carry the actual
+model messages, which is the point of tracing them (the app operator's
+own Langfuse project is the intended store for this data).
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
 
 from app.core.langfuse import get_langfuse
 from app.core.logging import get_logger
@@ -210,6 +219,122 @@ class _SpanWrapper:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._span, name)
+
+
+# ---------------------------------------------------------------------------
+# Current-scope observations (Langfuse v4)
+# ---------------------------------------------------------------------------
+
+def _propagate_attributes() -> Any:
+    """The SDK's ``propagate_attributes`` function, or ``None`` if the
+    installed SDK does not provide it."""
+    try:
+        from langfuse import propagate_attributes
+
+        return propagate_attributes
+    except Exception:
+        return None
+
+
+def current_observation(
+    name: str,
+    *,
+    metadata: Optional[dict[str, Any]] = None,
+    input_data: Any = None,
+    as_type: str = "span",
+) -> Any:
+    """Context manager for an observation that becomes the ACTIVE span.
+
+    Unlike :func:`ingestion_span` (which links children explicitly through
+    the wrapper), this uses the SDK's ``start_as_current_observation``, so
+    observations created deeper in the call stack — most importantly the
+    LLM generations recorded by ``app.agents.llm.chat`` — attach under it
+    automatically (including from ThreadPoolExecutor workers, which copy
+    the current context).
+
+    Yields a span object supporting ``.update(**kwargs)`` (input, output,
+    metadata, level, ...). Degrades to a no-op context manager when
+    Langfuse is unavailable or the SDK predates this API.
+    """
+    client = get_langfuse()
+    start = getattr(client, "start_as_current_observation", None)
+    if client is None or not callable(start):
+        return _NoopSpan()
+
+    kwargs: dict[str, Any] = {"name": name}
+    if as_type != "span":
+        kwargs["as_type"] = as_type
+    if metadata:
+        kwargs["metadata"] = metadata
+    if input_data is not None:
+        kwargs["input"] = input_data
+
+    try:
+        return start(**kwargs)
+    except Exception:
+        logger.debug("Langfuse observation creation failed for %s", name, exc_info=True)
+        return _NoopSpan()
+
+
+@contextmanager
+def user_scope(user_id: Optional[str] = None) -> Iterator[None]:
+    """Propagate a trace-level ``user_id`` to every observation created
+    within this scope (Langfuse v4 ``propagate_attributes``).
+
+    This is what fills the "User" column of the Langfuse trace list. No-op
+    when there is no user, Langfuse is unavailable, or the SDK predates
+    the API.
+    """
+    if user_id is None:
+        yield
+        return
+
+    propagate = _propagate_attributes()
+    if propagate is None:
+        yield
+        return
+
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(propagate(user_id=str(user_id)[:200]))
+        except Exception:
+            logger.debug("Langfuse user propagation failed; continuing.")
+        yield
+
+
+@contextmanager
+def prompt_scope(prompt: Any) -> Iterator[Any]:
+    """Link a managed prompt to the generations created within this scope.
+
+    ``prompt`` is a ``ManagedPrompt`` from
+    :mod:`app.services.prompt_service`. When its text was served by
+    Langfuse, the ``PromptClient`` (name + version) is passed to
+    ``propagate_attributes(prompt=...)`` so the Langfuse UI "Prompt Name"
+    column shows exactly which prompt version each model call used.
+    Fallback prompts (``client is None``) are never linked.
+    """
+    client = getattr(prompt, "client", None)
+    if client is None:
+        yield client
+        return
+
+    propagate = _propagate_attributes()
+    if propagate is None:
+        yield client
+        return
+
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(propagate(prompt=client))
+        except Exception:
+            logger.debug(
+                "Langfuse prompt propagation failed; continuing without prompt link."
+            )
+        yield client
 
 
 # ---------------------------------------------------------------------------

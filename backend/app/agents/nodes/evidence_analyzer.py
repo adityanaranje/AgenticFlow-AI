@@ -22,6 +22,7 @@ from app.agents.llm import parse_json_object
 from app.agents.state import EvidenceItem, ResearchState, RetrievedChunk
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.observability import prompt_scope
 from app.services.prompt_service import get_system_prompt
 
 logger = get_logger(__name__)
@@ -110,7 +111,7 @@ def _batch_chunks(
 
 def _evidence_prompt(
     state: ResearchState, batch: list[tuple[int, RetrievedChunk]]
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], Any]:
     excerpts = [
         f"[{_source_label(index)}]\n{chunk.content[:_EXCERPT_CHARS]}"
         for index, chunk in batch
@@ -121,16 +122,15 @@ def _evidence_prompt(
         "Retrieved excerpts:\n"
         + "\n\n".join(excerpts)
     )
-    return [
-        {
-            "role": "system",
-            "content": get_system_prompt(
-                "research-evidence-extractor",
-                fallback=prompts.EVIDENCE_SYSTEM,
-            ),
-        },
+    prompt = get_system_prompt(
+        "research-evidence-extractor",
+        fallback=prompts.EVIDENCE_SYSTEM,
+    )
+    messages = [
+        {"role": "system", "content": prompt.text},
         {"role": "user", "content": user},
     ]
+    return messages, prompt
 
 
 def _claims_from_text(text: str) -> list[dict]:
@@ -146,7 +146,9 @@ def _analyze_batch(
 ) -> list[EvidenceItem]:
     """Extract source-backed claims for one batch of chunks."""
     try:
-        text = services.llm(_evidence_prompt(state, batch))
+        messages, prompt = _evidence_prompt(state, batch)
+        with prompt_scope(prompt):
+            text = services.llm(messages)
         claims = _claims_from_text(text)
     except Exception:
         logger.warning(

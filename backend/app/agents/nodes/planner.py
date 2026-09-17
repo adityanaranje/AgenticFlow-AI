@@ -6,6 +6,7 @@ from app.agents import prompts
 from app.agents.context import ResearchServices
 from app.agents.llm import parse_json_object
 from app.agents.state import ResearchState
+from app.core.observability import prompt_scope
 from app.services.prompt_service import get_system_prompt
 
 
@@ -16,19 +17,22 @@ def planner_node(state: ResearchState, services: ResearchServices) -> ResearchSt
 
     # System prompt is managed in Langfuse (``research-planner``); the
     # in-code fallback renders {{max_subquestions}} the same way.
-    system = get_system_prompt(
+    prompt = get_system_prompt(
         "research-planner",
         fallback=prompts.PLANNER_SYSTEM,
         variables={"max_subquestions": max_sub},
     )
     user = f'Research question:\n"{state.original_query}"'
 
-    text = services.llm(
-        [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
-    )
+    # prompt_scope links the Langfuse prompt (name + version) to the
+    # generation recorded for this model call.
+    with prompt_scope(prompt):
+        text = services.llm(
+            [
+                {"role": "system", "content": prompt.text},
+                {"role": "user", "content": user},
+            ]
+        )
 
     try:
         payload = parse_json_object(text)

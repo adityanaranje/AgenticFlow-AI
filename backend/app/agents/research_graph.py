@@ -46,7 +46,7 @@ from app.agents.nodes.synthesis import synthesis_node
 from app.agents.state import ResearchState, RetrievedChunk
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.core.observability import ingestion_span, start_trace
+from app.core.observability import current_observation, user_scope
 from app.db.repositories.research import ResearchRepository
 from app.services import background, job_queue, report_service, retrieval
 
@@ -193,67 +193,115 @@ def run_research(research_id: str) -> dict[str, Any]:
     )
 
     try:
-        # Create a Langfuse trace so every span in this run appears as a
-        # proper tree in the Langfuse UI instead of orphaned top-level spans.
-        trace = start_trace(
-            "research.run",
-            metadata={"research_id": run["id"], "organization_id": organization_id},
-            user_id=run.get("user_id"),
-        )
+        # One Langfuse trace per run, properly nested: every node span is
+        # the *active* span inside its block (current_observation), so the
+        # LLM generations recorded by app.agents.llm.chat attach under the
+        # right node automatically. Node spans carry compact input/output
+        # summaries; the full model I/O lives on the generations.
+        run_meta = {"research_id": run["id"], "organization_id": organization_id}
+        with user_scope(run.get("user_id")):
+            with current_observation("research.run", metadata=run_meta):
+                # ---- planner ----
+                with current_observation("research.planner", metadata={"research_id": run["id"]}) as span:
+                    state = planner_node(state, services)
+                    span.update(
+                        input={"question": state.original_query},
+                        output={
+                            "sub_questions": state.sub_questions,
+                            "search_queries": state.search_queries,
+                        },
+                    )
+                services.persist(state)
 
-        with ingestion_span(
-            "research.run",
-            metadata={"research_id": run["id"], "organization_id": organization_id},
-            trace=trace,
-        ):
-            # ---- planner ----
-            with ingestion_span("research.planner", metadata={"research_id": run["id"]}, trace=trace):
-                state = planner_node(state, services)
-            services.persist(state)
+                # ---- retrieval → analysis → gap loop (bounded) ----
+                iteration = 0
+                while iteration <= max_iter:
+                    state.iteration = iteration
+                    if services.is_cancelled():
+                        _cancel(repo, run["id"], organization_id, state)
+                        return {"status": "cancelled"}
 
-            # ---- retrieval → analysis → gap loop (bounded) ----
-            iteration = 0
-            while iteration <= max_iter:
-                state.iteration = iteration
+                    with current_observation(
+                        "research.retrieve",
+                        metadata={"research_id": run["id"], "queries": len(state.search_queries)},
+                    ) as span:
+                        state = retriever_node(state, services)
+                        span.update(
+                            input={"queries": state.search_queries},
+                            output={"retrieved_chunks": len(state.retrieved)},
+                        )
+                    services.persist(state)
+                    if services.is_cancelled():
+                        _cancel(repo, run["id"], organization_id, state)
+                        return {"status": "cancelled"}
+
+                    with current_observation(
+                        "research.evidence",
+                        metadata={"research_id": run["id"], "retrieved": len(state.retrieved)},
+                    ) as span:
+                        state = evidence_analyzer_node(state, services)
+                        span.update(
+                            input={"chunks_analysed": len(state.retrieved)},
+                            output={"claims": len(state.evidence)},
+                        )
+                    services.persist(state)
+
+                    with current_observation(
+                        "research.gap",
+                        metadata={"research_id": run["id"], "iteration": iteration},
+                    ) as span:
+                        state = gap_detector_node(state, services)
+                        span.update(
+                            input={
+                                "claims": len(state.evidence),
+                                "retrieved_chunks": len(state.retrieved),
+                                "iteration": iteration,
+                            },
+                            output={
+                                "sufficient": not state.search_queries,
+                                "gaps": state.gaps[-5:],
+                                "follow_up_queries": state.search_queries,
+                            },
+                        )
+                    services.persist(state)
+
+                    if state.search_queries and iteration < max_iter:
+                        iteration += 1
+                        continue
+                    break
+
                 if services.is_cancelled():
                     _cancel(repo, run["id"], organization_id, state)
                     return {"status": "cancelled"}
 
-                with ingestion_span("research.retrieve", metadata={"research_id": run["id"], "queries": len(state.search_queries)}, trace=trace):
-                    state = retriever_node(state, services)
-                services.persist(state)
-                if services.is_cancelled():
-                    _cancel(repo, run["id"], organization_id, state)
-                    return {"status": "cancelled"}
-
-                with ingestion_span("research.evidence", metadata={"research_id": run["id"], "retrieved": len(state.retrieved)}, trace=trace):
-                    state = evidence_analyzer_node(state, services)
+                # ---- synthesis / validation / finalize ----
+                with current_observation("research.synthesis", metadata={"research_id": run["id"]}) as span:
+                    state = synthesis_node(state, services)
+                    span.update(
+                        input={"evidence_items": len(state.evidence)},
+                        output={"report_chars": len(state.draft or "")},
+                    )
                 services.persist(state)
 
-                with ingestion_span("research.gap", metadata={"research_id": run["id"], "iteration": iteration}, trace=trace):
-                    state = gap_detector_node(state, services)
+                with current_observation(
+                    "research.citations",
+                    metadata={"research_id": run["id"], "evidence": len(state.evidence)},
+                ) as span:
+                    state = citation_validator_node(state, services)
+                    span.update(
+                        input={"evidence_items": len(state.evidence)},
+                        output={"citations": len(state.citations)},
+                    )
                 services.persist(state)
 
-                if state.search_queries and iteration < max_iter:
-                    iteration += 1
-                    continue
-                break
-
-            if services.is_cancelled():
-                _cancel(repo, run["id"], organization_id, state)
-                return {"status": "cancelled"}
-
-            # ---- synthesis / validation / finalize ----
-            with ingestion_span("research.synthesis", metadata={"research_id": run["id"]}, trace=trace):
-                state = synthesis_node(state, services)
-            services.persist(state)
-
-            with ingestion_span("research.citations", metadata={"research_id": run["id"], "evidence": len(state.evidence)}, trace=trace):
-                state = citation_validator_node(state, services)
-            services.persist(state)
-
-            with ingestion_span("research.finalize", metadata={"research_id": run["id"]}, trace=trace):
-                state = finalizer_node(state, services)
+                with current_observation("research.finalize", metadata={"research_id": run["id"]}) as span:
+                    state = finalizer_node(state, services)
+                    span.update(
+                        output={
+                            "sections": len(state.sections),
+                            "confidence": state.confidence,
+                        }
+                    )
 
         # ---- store the report + sources ----
         stored = report_service.store_report(state)

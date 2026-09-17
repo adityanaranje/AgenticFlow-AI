@@ -142,21 +142,21 @@ def _llm_quality(content: str) -> Optional[float]:
     try:
         from app.agents import prompts
         from app.agents.llm import chat, parse_json_object
+        from app.core.observability import prompt_scope
         from app.services.prompt_service import get_system_prompt
 
-        text = chat(
-            [
-                {
-                    "role": "system",
-                    "content": get_system_prompt(
-                        "report-quality-judge",
-                        fallback=prompts.EVALUATION_JUDGE_SYSTEM,
-                    ),
-                },
-                {"role": "user", "content": content[:8000]},
-            ],
-            max_tokens=60,
+        judge = get_system_prompt(
+            "report-quality-judge",
+            fallback=prompts.EVALUATION_JUDGE_SYSTEM,
         )
+        with prompt_scope(judge):
+            text = chat(
+                [
+                    {"role": "system", "content": judge.text},
+                    {"role": "user", "content": content[:8000]},
+                ],
+                max_tokens=60,
+            )
         payload = parse_json_object(text)
         return float(payload.get("answer_quality", 0.0))
     except Exception:

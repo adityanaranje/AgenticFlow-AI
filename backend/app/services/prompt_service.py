@@ -26,11 +26,18 @@ Resilience: when Langfuse is not configured, a prompt does not exist in
 Langfuse yet, or the fetch fails, the in-code fallback from
 :mod:`app.agents.prompts` is used so the research pipeline never stops
 because of prompt management.
+
+Tracing: the returned :class:`ManagedPrompt` keeps the Langfuse
+``PromptClient`` when the text came from Langfuse. Nodes wrap their model
+calls in ``app.core.observability.prompt_scope(prompt)`` so the
+corresponding generations in Langfuse carry the prompt name + version
+(the "Prompt Name" column in the UI).
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from app.core.config import settings
@@ -41,6 +48,30 @@ logger = get_logger(__name__)
 
 # ``{{variable}}`` placeholders (Langfuse template syntax) in fallback text.
 _VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
+
+@dataclass(frozen=True)
+class ManagedPrompt:
+    """A resolved system prompt.
+
+    Attributes:
+        name: Langfuse prompt name the text was (attempted to be) served
+            from, e.g. ``research-planner``.
+        text: The compiled prompt text, ready to use as a system message.
+        client: The Langfuse ``PromptClient`` (exposes ``name``/``version``)
+            when the text was served by Langfuse — used to link the prompt
+            to generations in traces. ``None`` when the in-code fallback
+            was used (fallbacks are never linked).
+    """
+
+    name: str
+    text: str
+    client: Optional[Any] = None
+
+    @property
+    def version(self) -> Optional[int]:
+        version = getattr(self.client, "version", None)
+        return int(version) if version is not None else None
 
 
 def _render_fallback(template: str, variables: Optional[dict[str, Any]]) -> str:
@@ -66,7 +97,7 @@ def get_system_prompt(
     *,
     fallback: str,
     variables: Optional[dict[str, Any]] = None,
-) -> str:
+) -> ManagedPrompt:
     """Return the production version of a Langfuse text prompt.
 
     Args:
@@ -77,11 +108,12 @@ def get_system_prompt(
             ``{"max_subquestions": 5}``.
 
     Returns:
-        The compiled prompt text.
+        A :class:`ManagedPrompt`; use ``.text`` for the system message and
+        pass the object to ``prompt_scope`` around the model call.
     """
     client = get_langfuse()
     if client is None:
-        return _render_fallback(fallback, variables)
+        return ManagedPrompt(name=name, text=_render_fallback(fallback, variables))
 
     try:
         prompt = client.get_prompt(
@@ -90,7 +122,11 @@ def get_system_prompt(
             label="production",
             cache_ttl_seconds=settings.prompt_cache_ttl_seconds,
         )
-        return prompt.compile(**(variables or {}))
+        return ManagedPrompt(
+            name=name,
+            text=prompt.compile(**(variables or {})),
+            client=prompt,
+        )
     except Exception:
         logger.warning(
             "Could not fetch Langfuse prompt '%s' (production); "
@@ -98,4 +134,4 @@ def get_system_prompt(
             name,
             exc_info=True,
         )
-        return _render_fallback(fallback, variables)
+        return ManagedPrompt(name=name, text=_render_fallback(fallback, variables))

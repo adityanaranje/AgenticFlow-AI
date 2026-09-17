@@ -12,6 +12,7 @@ from app.agents import prompts
 from app.agents.context import ResearchServices
 from app.agents.llm import parse_json_object
 from app.agents.state import ResearchState
+from app.core.observability import prompt_scope
 from app.services.prompt_service import get_system_prompt
 
 
@@ -37,27 +38,23 @@ def gap_detector_node(state: ResearchState, services: ResearchServices) -> Resea
             q for q in state.sub_questions if q not in answered
         ] or [state.original_query]
     else:
+        prompt = get_system_prompt("research-gap-detector", fallback=prompts.GAP_SYSTEM)
         try:
-            text = services.llm(
-                [
-                    {
-                        "role": "system",
-                        "content": get_system_prompt(
-                            "research-gap-detector",
-                            fallback=prompts.GAP_SYSTEM,
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Question: {state.original_query}\n"
-                            f"Claims gathered: {len(state.evidence)}\n"
-                            f"Retrieved chunks: {len(state.retrieved)}\n"
-                            f"Prior gaps: {state.gaps[:5]}\n"
-                        ),
-                    },
-                ]
-            )
+            with prompt_scope(prompt):
+                text = services.llm(
+                    [
+                        {"role": "system", "content": prompt.text},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Question: {state.original_query}\n"
+                                f"Claims gathered: {len(state.evidence)}\n"
+                                f"Retrieved chunks: {len(state.retrieved)}\n"
+                                f"Prior gaps: {state.gaps[:5]}\n"
+                            ),
+                        },
+                    ]
+                )
             payload = parse_json_object(text)
             sufficient = bool(payload.get("sufficient", _evidence_coverage(state)))
             gaps = [str(g) for g in payload.get("gaps", []) if str(g).strip()]

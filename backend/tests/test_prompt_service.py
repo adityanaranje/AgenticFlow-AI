@@ -5,9 +5,8 @@ fallback path runs by default; a fake client is injected to cover the
 Langfuse path without any network.
 """
 
-import pytest
-
 from app.agents import prompts
+from app.core import observability
 from app.services import prompt_service
 
 
@@ -15,6 +14,8 @@ class _FakeTextPrompt:
     def __init__(self, rendered: str, seen: dict):
         self._rendered = rendered
         self._seen = seen
+        self.name = "research-planner"
+        self.version = 9
 
     def compile(self, **variables):
         self._seen["compile"].update(variables)
@@ -38,16 +39,18 @@ class _FakeClient:
 def test_fallback_when_langfuse_unconfigured(monkeypatch):
     monkeypatch.setattr(prompt_service, "get_langfuse", lambda: None)
 
-    text = prompt_service.get_system_prompt(
+    result = prompt_service.get_system_prompt(
         "research-planner",
         fallback=prompts.PLANNER_SYSTEM,
         variables={"max_subquestions": 7},
     )
 
-    assert "at most 7" in text
-    assert "{{max_subquestions}}" not in text
+    assert result.name == "research-planner"
+    assert "at most 7" in result.text
+    assert "{{max_subquestions}}" not in result.text
+    assert result.client is None  # fallbacks are never linked to traces
     # JSON braces in the template survive untouched.
-    assert '{"sub_questions": ["...", "..."]}' in text
+    assert '{"sub_questions": ["...", "..."]}' in result.text
 
 
 def test_unknown_variable_left_intact_in_fallback():
@@ -62,13 +65,16 @@ def test_uses_langfuse_production_prompt(monkeypatch):
     client = _FakeClient("from-langfuse")
     monkeypatch.setattr(prompt_service, "get_langfuse", lambda: client)
 
-    text = prompt_service.get_system_prompt(
+    result = prompt_service.get_system_prompt(
         "research-planner",
         fallback=prompts.PLANNER_SYSTEM,
         variables={"max_subquestions": 5},
     )
 
-    assert text == "from-langfuse"
+    assert result.text == "from-langfuse"
+    # The PromptClient is exposed so prompt_scope can link it to traces.
+    assert result.client is not None
+    assert result.version == 9
     assert client.calls == [
         {
             "name": "research-planner",
@@ -84,22 +90,84 @@ def test_falls_back_when_fetch_fails(monkeypatch, caplog):
     client = _FakeClient("unused", error=RuntimeError("prompt not found"))
     monkeypatch.setattr(prompt_service, "get_langfuse", lambda: client)
 
-    text = prompt_service.get_system_prompt(
+    result = prompt_service.get_system_prompt(
         "research-gap-detector",
         fallback=prompts.GAP_SYSTEM,
     )
 
-    assert text == prompts.GAP_SYSTEM
+    assert result.text == prompts.GAP_SYSTEM
+    assert result.client is None
     assert "Could not fetch Langfuse prompt" in caplog.text
 
 
+def test_prompt_scope_links_client_via_propagate_attributes(monkeypatch):
+    """prompt_scope passes the PromptClient to propagate_attributes so the
+    generations inside the scope carry the prompt name/version in traces."""
+    events: list = []
+
+    class _FakeCM:
+        def __enter__(self):
+            events.append("enter")
+            return self
+
+        def __exit__(self, *_args):
+            events.append("exit")
+            return False
+
+    def fake_propagate(**kwargs):
+        events.append(kwargs)
+        return _FakeCM()
+
+    monkeypatch.setattr(observability, "_propagate_attributes", lambda: fake_propagate)
+
+    fake_client = object()
+    prompt = prompt_service.ManagedPrompt(name="x", text="t", client=fake_client)
+    with observability.prompt_scope(prompt) as linked:
+        assert linked is fake_client
+
+    assert {"prompt": fake_client} in events
+    assert events.count("enter") == 1 and events.count("exit") == 1
+
+
+def test_prompt_scope_is_noop_for_fallback_prompt():
+    prompt = prompt_service.ManagedPrompt(name="x", text="t", client=None)
+    with observability.prompt_scope(prompt) as linked:
+        assert linked is None
+
+
+def test_user_scope_propagates_user_id(monkeypatch):
+    events: list = []
+
+    class _FakeCM:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_propagate(**kwargs):
+        events.append(kwargs)
+        return _FakeCM()
+
+    monkeypatch.setattr(observability, "_propagate_attributes", lambda: fake_propagate)
+    with observability.user_scope("u-123"):
+        pass
+    assert {"user_id": "u-123"} in events
+
+    events.clear()
+    with observability.user_scope(None):
+        pass
+    assert events == []  # nothing to propagate
+
+
 def test_nodes_use_langfuse_prompt_end_to_end(monkeypatch):
-    """Full pipeline with a Langfuse client: the fake LLM still sees the
-    compiled system prompts, proving nodes route through the service."""
+    """Full planner path with a Langfuse client: the fake LLM sees the
+    compiled system prompt, proving nodes route through the service."""
+    import json
+
     from app.agents.context import ResearchServices
     from app.agents.nodes.planner import planner_node
     from app.agents.state import ResearchState
-    import json
 
     client = _FakeClient("You are a research planner (langfuse v9).")
     monkeypatch.setattr(prompt_service, "get_langfuse", lambda: client)

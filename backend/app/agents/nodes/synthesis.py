@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.agents import prompts
 from app.agents.context import ResearchServices
 from app.agents.state import ResearchState
+from app.core.observability import prompt_scope
 from app.services.prompt_service import get_system_prompt
 
 
@@ -31,18 +32,14 @@ def synthesis_node(state: ResearchState, services: ResearchServices) -> Research
         )
     )
 
-    draft = services.llm(
-        [
-            {
-                "role": "system",
-                "content": get_system_prompt(
-                    "research-report-synthesis",
-                    fallback=prompts.SYNTHESIS_SYSTEM,
-                ),
-            },
-            {"role": "user", "content": user},
-        ]
-    )
+    prompt = get_system_prompt("research-report-synthesis", fallback=prompts.SYNTHESIS_SYSTEM)
+    with prompt_scope(prompt):
+        draft = services.llm(
+            [
+                {"role": "system", "content": prompt.text},
+                {"role": "user", "content": user},
+            ]
+        )
 
     state.draft = draft
     return state
