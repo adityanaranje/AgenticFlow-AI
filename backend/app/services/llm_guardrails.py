@@ -133,6 +133,47 @@ def check_user_quota(user_id: str) -> None:
             )
 
 
+def user_quota_status(user_id: str) -> dict[str, Any]:
+    """Remaining-limit view for a user (surfaced via GET .../research/quota).
+
+    ``remaining`` is ``None`` when a limit is disabled (0 = unlimited).
+    ``enforced`` is False when Redis is unavailable — counters then read 0
+    and limits are not being applied.
+    """
+    usage = user_token_usage(user_id)
+    status: dict[str, Any] = {
+        "user_id": user_id,
+        "enforced": _redis() is not None,
+        "run_token_budget": max(0, int(settings.llm_run_token_budget)),
+        "hourly": _window_view(usage["hourly"]),
+        "daily": _window_view(usage["daily"]),
+        "concurrent_runs": {
+            "active": 0,
+            "limit": max(0, int(settings.llm_user_max_concurrent_runs)),
+        },
+    }
+    client = _redis()
+    if client is not None:
+        try:
+            _purge_stale_slots(client, user_id)
+            status["concurrent_runs"]["active"] = int(
+                client.scard(_run_set_key(user_id)) or 0
+            )
+        except Exception:
+            logger.debug("Active-run count failed for %s.", user_id, exc_info=True)
+    return status
+
+
+def _window_view(window_usage: dict[str, int]) -> dict[str, Any]:
+    limit = int(window_usage["limit"])
+    used = int(window_usage["used"])
+    return {
+        "used": used,
+        "limit": limit,
+        "remaining": None if limit <= 0 else max(0, limit - used),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Concurrent-run slots
 # ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ from app.core.auth import Membership
 from app.core.exceptions import AdmissionError
 from app.core.rbac import require_researcher, require_viewer
 from app.db.repositories.research import ResearchRepository
-from app.services import research_service
+from app.services import llm_guardrails, research_service
 
 router = APIRouter(
     prefix="/api/v1/organizations/{organization_id}/research",
@@ -65,6 +65,21 @@ def list_research(
 ) -> dict:
     rows = ResearchRepository().list_for_org(organization_id)
     return {"research": rows}
+
+
+# Declared before "/{research_id}" so "quota" is not parsed as a run id.
+@router.get("/quota")
+def get_research_quota(
+    organization_id: str,
+    membership: Membership = Depends(require_viewer()),
+) -> dict:
+    """Token usage + remaining quota for the authenticated user.
+
+    Reports the hourly/daily token windows (used / limit / remaining),
+    the active concurrent-run count, and the per-run token budget. This is
+    the user's "how much do I have left?" view — poll it from the UI.
+    """
+    return llm_guardrails.user_quota_status(membership.user.id)
 
 
 @router.get("/{research_id}")

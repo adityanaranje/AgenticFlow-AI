@@ -209,6 +209,78 @@ def test_dispatch_admits_and_releases_slot(fake_redis, monkeypatch):
     assert fake_redis.smembers(guard._run_set_key("user-1")) == set()
 
 
+# --- remaining-limit view (user_quota_status + /quota endpoint) -------------------
+
+def test_user_quota_status_remaining(fake_redis, monkeypatch):
+    monkeypatch.setattr(guard.settings, "llm_user_token_limit_hourly", 1000)
+    monkeypatch.setattr(guard.settings, "llm_user_token_limit_daily", 2000)
+    guard.record_user_tokens("u1", 120)
+    guard.acquire_run_slot("u1", "r1")
+    guard.acquire_run_slot("u1", "r2")
+
+    status = guard.user_quota_status("u1")
+    assert status["enforced"] is True
+    assert status["hourly"] == {"used": 120, "limit": 1000, "remaining": 880}
+    assert status["daily"] == {"used": 120, "limit": 2000, "remaining": 1880}
+    assert status["concurrent_runs"] == {"active": 2, "limit": 2}
+    assert status["run_token_budget"] >= 0
+    assert status["user_id"] == "u1"
+
+
+def test_user_quota_status_unlimited_windows_show_null_remaining(
+    fake_redis, monkeypatch
+):
+    monkeypatch.setattr(guard.settings, "llm_user_token_limit_hourly", 0)
+    monkeypatch.setattr(guard.settings, "llm_user_token_limit_daily", 0)
+    status = guard.user_quota_status("u1")
+    assert status["hourly"]["remaining"] is None
+    assert status["daily"]["remaining"] is None
+
+
+def test_user_quota_status_without_redis_is_unenforced(monkeypatch):
+    monkeypatch.setattr(guard, "get_redis_client", lambda: None)
+    status = guard.user_quota_status("u1")
+    assert status["enforced"] is False
+    assert status["hourly"]["used"] == 0
+    assert status["concurrent_runs"]["active"] == 0
+
+
+def test_quota_endpoint_reports_remaining(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.core.auth import (
+        AuthenticatedUser,
+        Membership,
+        require_organization_membership,
+    )
+    from app.main import app
+
+    monkeypatch.setattr(guard.settings, "llm_user_token_limit_hourly", 1000)
+    monkeypatch.setattr(guard.settings, "llm_user_token_limit_daily", 2000)
+
+    fake = FakeRedis()
+    monkeypatch.setattr(guard, "get_redis_client", lambda: fake)
+    guard.record_user_tokens("u-quota", 250)
+
+    membership = Membership(
+        user=AuthenticatedUser(id="u-quota"),
+        organization_id="org-1",
+        role="viewer",
+    )
+    app.dependency_overrides[require_organization_membership] = lambda: membership
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/v1/organizations/org-1/research/quota")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["hourly"] == {"used": 250, "limit": 1000, "remaining": 750}
+    assert body["daily"] == {"used": 250, "limit": 2000, "remaining": 1750}
+    assert body["concurrent_runs"]["active"] == 0
+
+
 # --- input guardrail: config sanitization ----------------------------------------
 
 def test_sanitize_config_clamps_and_whitelists():

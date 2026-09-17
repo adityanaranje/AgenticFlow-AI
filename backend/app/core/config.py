@@ -203,7 +203,7 @@ class Settings(BaseSettings):
         default=100_000, alias="LLM_USER_TOKEN_LIMIT_HOURLY"
     )
     llm_user_token_limit_daily: int = Field(
-        default=500_000, alias="LLM_USER_TOKEN_LIMIT_DAILY"
+        default=200_000, alias="LLM_USER_TOKEN_LIMIT_DAILY"
     )
     # Max research runs a user may have queued/in-flight at the same time.
     llm_user_max_concurrent_runs: int = Field(

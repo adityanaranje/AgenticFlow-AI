@@ -171,7 +171,7 @@ npm install
 | `REPORT_SOURCE_BATCH_SIZE`        | backend    |          | Rows per report source insert (default `100`) |
 | `EMBEDDING_CACHE_TTL_SECONDS`     | backend    |          | TTL for cached query embeddings (default `3600`) |
 | `LLM_USER_TOKEN_LIMIT_HOURLY`     | backend    |          | Per-user hourly token quota, `0` = unlimited (default `100000`) |
-| `LLM_USER_TOKEN_LIMIT_DAILY`      | backend    |          | Per-user daily token quota, `0` = unlimited (default `500000`) |
+| `LLM_USER_TOKEN_LIMIT_DAILY`      | backend    |          | Per-user daily token quota, `0` = unlimited (default `200000`) |
 | `LLM_USER_MAX_CONCURRENT_RUNS`    | backend    |          | Max queued/in-flight research runs per user, `0` = unlimited (default `2`) |
 | `LLM_RUN_TOKEN_BUDGET`            | backend    |          | Token budget for one research run, `0` = unlimited (default `100000`) |
 | `RESEARCH_RUN_SLOT_TTL_SECONDS`   | backend    |          | TTL for a run's concurrency slot (default `3600`) |
@@ -195,15 +195,33 @@ legacy keys still work while enabled, but new projects only get the new ones.
 ### 5.1 LLM usage guardrails
 
 Research runs make a chain of model calls, so per-user token spend is
-bounded at three levels (all Redis-backed, all `0` = unlimited; degrades to
+bounded at four levels (all Redis-backed, all `0` = unlimited; degrades to
 "allowed" when Redis is down, so a missing Redis never breaks dev setups):
 
 | Level            | Setting                        | Enforced where        | On breach                                    |
 | ---------------- | ------------------------------ | --------------------- | -------------------------------------------- |
-| Per user / hour  | `LLM_USER_TOKEN_LIMIT_HOURLY`  | dispatch (API)        | `429` with the window + used/limit details   |
-| Per user / day   | `LLM_USER_TOKEN_LIMIT_DAILY`   | dispatch (API)        | `429` as above                               |
-| Per user, runs   | `LLM_USER_MAX_CONCURRENT_RUNS` | dispatch (API)        | `429` "already have N runs in progress"      |
-| Per run          | `LLM_RUN_TOKEN_BUDGET`         | worker, before each model call | run fails with a clear error; work so far is persisted |
+| Level            | Setting                        | Default | Enforced where        | On breach                                    |
+| ---------------- | ------------------------------ | ------- | --------------------- | -------------------------------------------- |
+| Per user / hour  | `LLM_USER_TOKEN_LIMIT_HOURLY`  | 100k    | dispatch (API)        | `429` with the window + used/limit details   |
+| Per user / day   | `LLM_USER_TOKEN_LIMIT_DAILY`   | 200k    | dispatch (API)        | `429` as above                               |
+| Per user, runs   | `LLM_USER_MAX_CONCURRENT_RUNS` | 2       | dispatch (API)        | `429` "already have N runs in progress"      |
+| Per run          | `LLM_RUN_TOKEN_BUDGET`         | 100k    | worker, before each model call | run fails with a clear error; work so far is persisted |
+
+**How much is left?** `GET /api/v1/organizations/{org}/research/quota`
+(authenticated, viewer+) returns the caller's remaining budget:
+
+```json
+{
+  "hourly": { "used": 12000, "limit": 100000, "remaining": 88000 },
+  "daily":  { "used": 47000, "limit": 200000, "remaining": 153000 },
+  "concurrent_runs": { "active": 1, "limit": 2 },
+  "run_token_budget": 100000,
+  "enforced": true
+}
+```
+
+`remaining` is `null` for a disabled limit (`0` = unlimited) and
+`enforced` is `false` when Redis is down (counters then read 0).
 
 Tokens are the **real usage** reported by the model provider (estimated
 from character counts only when a provider omits usage); cached LLM
