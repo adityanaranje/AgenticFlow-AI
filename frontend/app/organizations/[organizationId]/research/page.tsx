@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Microscope, Sparkles } from "lucide-react";
 
 import NewResearchForm from "@/components/research/NewResearchForm";
+import TokenQuotaCard from "@/components/research/TokenQuotaCard";
 import OrgHeader from "@/components/organizations/OrgHeader";
 import {
   getUserOrganizations,
@@ -82,6 +83,8 @@ export default async function ResearchPage({
             detects gaps and writes a cited report.
           </p>
         </div>
+
+        <TokenQuotaCard organizationId={organization.id} />
 
         <section className="card p-6">
           <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900 dark:text-white">

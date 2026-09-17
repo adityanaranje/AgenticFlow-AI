@@ -4,6 +4,7 @@ import { ArrowLeft, Calendar } from "lucide-react";
 
 import OrgHeader from "@/components/organizations/OrgHeader";
 import ResearchRunTracker, { type RunView } from "@/components/research/ResearchRunTracker";
+import TokenQuotaCard from "@/components/research/TokenQuotaCard";
 import {
   getUserOrganizations,
   requireOrganizationMembership,
@@ -50,11 +51,14 @@ export default async function ResearchDetailPage({
             This research run was not found in this organization.
           </div>
         ) : (
-          <ResearchRunTracker
-            organizationId={organization.id}
-            runId={run.id}
-            initial={run as RunView}
-          />
+          <>
+            <TokenQuotaCard organizationId={organization.id} />
+            <ResearchRunTracker
+              organizationId={organization.id}
+              runId={run.id}
+              initial={run as RunView}
+            />
+          </>
         )}
 
         <p className="flex items-center gap-1.5 text-xs text-zinc-400">

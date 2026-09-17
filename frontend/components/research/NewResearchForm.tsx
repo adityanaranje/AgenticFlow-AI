@@ -60,10 +60,13 @@ export default function NewResearchForm({
         },
       );
       const payload = (await response.json().catch(() => null)) as
-        | { id?: string; error?: string; message?: string }
+        | { id?: string; error?: string; detail?: string; message?: string }
         | null;
       if (!response.ok) {
-        setError(payload?.error ?? "Could not start research.");
+        // detail carries the FastAPI reason — e.g. the exact token quota
+        // or concurrent-run limit hit (429), so the user sees what to wait
+        // for instead of a generic failure.
+        setError(payload?.detail ?? payload?.error ?? "Could not start research.");
         setSubmitting(false);
         return;
       }
