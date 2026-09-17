@@ -535,6 +535,11 @@ indexes, member management). Apply them in a Supabase SQL editor or via
 (it intentionally inserts nothing today — users/orgs are created through the
 app).
 
+> **Upgrading an existing database?** Apply
+> `015_member_management.sql` then `016_invitation_requests.sql` — see
+> [`database/APPLY_MEMBER_MANAGEMENT.md`](database/APPLY_MEMBER_MANAGEMENT.md)
+> for step-by-step instructions and verification queries.
+
 ### Organizations, members and roles
 
 Roles are `owner > admin > researcher > viewer`, defined once in the
