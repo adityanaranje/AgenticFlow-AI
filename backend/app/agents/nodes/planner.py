@@ -6,6 +6,7 @@ from app.agents import prompts
 from app.agents.context import ResearchServices
 from app.agents.llm import parse_json_object
 from app.agents.state import ResearchState
+from app.services.prompt_service import get_system_prompt
 
 
 def planner_node(state: ResearchState, services: ResearchServices) -> ResearchState:
@@ -13,9 +14,13 @@ def planner_node(state: ResearchState, services: ResearchServices) -> ResearchSt
     state.status = "planning"
     max_sub = int(state.config.get("max_subquestions", 5))
 
-    # Replace the placeholder token (do NOT use str.format: the prompt body
-    # itself contains JSON braces).
-    system = prompts.PLANNER_SYSTEM.replace("{max_subquestions}", str(max_sub))
+    # System prompt is managed in Langfuse (``research-planner``); the
+    # in-code fallback renders {{max_subquestions}} the same way.
+    system = get_system_prompt(
+        "research-planner",
+        fallback=prompts.PLANNER_SYSTEM,
+        variables={"max_subquestions": max_sub},
+    )
     user = f'Research question:\n"{state.original_query}"'
 
     text = services.llm(

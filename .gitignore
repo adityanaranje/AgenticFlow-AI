@@ -86,3 +86,6 @@ frontend/node_modules/
 tmp/
 temp/
 *.tmp
+
+# Local prompt-management guide (kept out of the repo on request)
+PROMPTS.md

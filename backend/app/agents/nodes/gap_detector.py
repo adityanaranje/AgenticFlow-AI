@@ -12,6 +12,7 @@ from app.agents import prompts
 from app.agents.context import ResearchServices
 from app.agents.llm import parse_json_object
 from app.agents.state import ResearchState
+from app.services.prompt_service import get_system_prompt
 
 
 def _evidence_coverage(state: ResearchState) -> bool:
@@ -39,7 +40,13 @@ def gap_detector_node(state: ResearchState, services: ResearchServices) -> Resea
         try:
             text = services.llm(
                 [
-                    {"role": "system", "content": prompts.GAP_SYSTEM},
+                    {
+                        "role": "system",
+                        "content": get_system_prompt(
+                            "research-gap-detector",
+                            fallback=prompts.GAP_SYSTEM,
+                        ),
+                    },
                     {
                         "role": "user",
                         "content": (

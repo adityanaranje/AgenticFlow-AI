@@ -192,6 +192,10 @@ class Settings(BaseSettings):
     langfuse_public_key: str = Field(default="", alias="LANGFUSE_PUBLIC_KEY")
     langfuse_secret_key: str = Field(default="", alias="LANGFUSE_SECRET_KEY")
     langfuse_host: str = Field(default="https://cloud.langfuse.com", alias="LANGFUSE_HOST")
+    # Client-side cache TTL (seconds) for prompts fetched from Langfuse
+    # Prompt Management. 0 disables caching (always fetch the latest
+    # version — useful in development); the SDK default is 60.
+    prompt_cache_ttl_seconds: int = Field(default=60, alias="PROMPT_CACHE_TTL_SECONDS")
 
     # MCP
     mcp_host: str = Field(default="0.0.0.0", alias="MCP_HOST")

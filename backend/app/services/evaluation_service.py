@@ -140,15 +140,17 @@ def _llm_quality(content: str) -> Optional[float]:
     if not settings.openai_api_key:
         return None
     try:
+        from app.agents import prompts
         from app.agents.llm import chat, parse_json_object
+        from app.services.prompt_service import get_system_prompt
 
         text = chat(
             [
                 {
                     "role": "system",
-                    "content": (
-                        "Rate the quality of a research report on a scale 0-1. "
-                        'Respond JSON only: {"answer_quality": 0.0}'
+                    "content": get_system_prompt(
+                        "report-quality-judge",
+                        fallback=prompts.EVALUATION_JUDGE_SYSTEM,
                     ),
                 },
                 {"role": "user", "content": content[:8000]},

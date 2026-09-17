@@ -22,6 +22,7 @@ from app.agents.llm import parse_json_object
 from app.agents.state import EvidenceItem, ResearchState, RetrievedChunk
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services.prompt_service import get_system_prompt
 
 logger = get_logger(__name__)
 
@@ -121,7 +122,13 @@ def _evidence_prompt(
         + "\n\n".join(excerpts)
     )
     return [
-        {"role": "system", "content": prompts.EVIDENCE_SYSTEM},
+        {
+            "role": "system",
+            "content": get_system_prompt(
+                "research-evidence-extractor",
+                fallback=prompts.EVIDENCE_SYSTEM,
+            ),
+        },
         {"role": "user", "content": user},
     ]
 

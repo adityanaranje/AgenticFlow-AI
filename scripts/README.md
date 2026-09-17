@@ -12,6 +12,7 @@ Small convenience scripts for local development (Phase 1).
 | `scripts/check-health.sh`     | Poll backend and frontend health endpoints.               |
 | `scripts/benchmark-ingestion.py` | Measure ingestion speed against simulated remote latencies. |
 | `scripts/benchmark-research.py` | Measure research-run speed against simulated remote latencies. |
+| `scripts/seed_langfuse_prompts.py` | Create the platform's prompts in Langfuse Prompt Management (idempotent; see `PROMPTS.md`). |
 
 Frontend environment problems (missing / shadowed / wrong-file `NEXT_PUBLIC_*`
 values) are diagnosed by `cd frontend && npm run doctor`, which reads the same
