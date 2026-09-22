@@ -1,77 +1,124 @@
 # AgentFlow AI
 
-Production-oriented, multi-tenant **AI research platform**. Organizations upload
-documents, build a searchable knowledge base, run AI-powered research,
-generate reports, and evaluate the quality of generated answers.
+**An organization-scoped AI research and knowledge intelligence platform.**
+Upload documents, turn them into a searchable knowledge base, ask research
+questions, and review generated reports with source citations and quality metrics.
+The repository is named **AgenticFlow-AI**; the application uses **AgentFlow AI**.
 
-> **Status: Phase 1 — Project Foundation & Infrastructure**
-> This phase delivers the application shell, health-checked service wiring and
-> development infrastructure. AI functionality (RAG, agents, evaluation) is
-> intentionally **not** implemented yet — no fake AI endpoints are exposed.
+> **Current implementation:** authentication and organizations, document ingestion,
+> semantic retrieval, a bounded multi-step research pipeline, report persistence,
+> evaluations, usage guardrails, and Langfuse integration. This is no longer a
+> foundation-only shell. Some tool/MCP/RAG modules remain scaffolding; see
+> [implementation boundaries](#16-implementation-boundaries-and-limitations).
 
----
+## Contents
 
-## 1. Architecture
+- [Architecture and technology](#1-architecture-and-technology)
+- [Repository layout](#2-repository-layout)
+- [Prerequisites](#3-prerequisites) · [Installation](#4-installation)
+- [Configuration](#5-environment-variables) · [Local development](#6-local-development)
+- [Docker](#7-docker-usage) · [Testing](#8-testing)
+- [Ingestion performance](#9-ingestion-performance) · [Research performance](#10-research-performance)
+- [Health](#11-health-endpoint) · [Database and roles](#12-database-migrations)
+- [Features and user journey](#13-features-and-user-journey)
+- [End-to-end AI pipeline](#14-end-to-end-ai-pipeline)
+- [API walkthrough](#15-api-walkthrough)
+- [Implementation boundaries](#16-implementation-boundaries-and-limitations)
 
-| Layer         | Technology                                                                 |
-| ------------- | -------------------------------------------------------------------------- |
-| Frontend      | Next.js (App Router) · TypeScript · React · Supabase Auth · Supabase Storage |
-| Backend       | Python 3.10+ · FastAPI · LangChain · LangGraph · OpenAI                     |
-| Infrastructure| Supabase (PostgreSQL + Storage) · Qdrant · Redis · Langfuse                |
-| AI            | OpenAI models · Embeddings · RAG · Agentic research workflow (LangGraph)   |
-| Observability | Langfuse                                                                   |
+## 1. Architecture and technology
 
+```mermaid
+flowchart TD
+    User[Browser / Next.js UI] --> Auth[Supabase Auth]
+    User --> API[FastAPI: JWT and organization authorization]
+    User --> Next[Next.js organization and invitation routes]
+    Next --> DB[Supabase PostgreSQL and RLS]
+    API --> DB
+    API --> Storage[Supabase Storage: original files]
+    API --> Redis[Redis: queues, caches, usage counters]
+    Redis --> DW[Document worker]
+    Redis --> RW[Research worker]
+    DW --> Storage
+    DW --> DB
+    DW --> Embeddings[OpenAI embeddings]
+    DW --> Qdrant[Qdrant: tenant-filtered vectors]
+    RW --> Embeddings
+    RW --> Qdrant
+    RW --> LLM[OpenAI chat models]
+    RW --> DB
+    RW --> Eval[Report evaluation]
+    Eval --> DB
+    DW -. telemetry .-> LF[Langfuse traces and prompts]
+    RW -. telemetry .-> LF
 ```
-Browser ──► Next.js (frontend, :3000) ──► FastAPI (backend, :8000) ──► OpenAI
-   │                                                                    │
-   ├─ Supabase Auth (browser)            Redis (cache) ◄────────────────┘
-   └─ Supabase Storage / PostgREST        Qdrant (vector DB)
-                                          Langfuse (traces / prompts)
-```
 
-External managed services (Supabase, Qdrant, Langfuse) are **not** duplicated
-locally; the development stack runs only the backend, frontend and Redis.
+### Tools, services, and their usage
+
+| Component | What it does in this project | Where to look |
+| --- | --- | --- |
+| Next.js 16, React 19, TypeScript | App Router UI for authentication, organizations, documents, research progress, reports, evaluations, and invitations | `frontend/app/`, `frontend/components/` |
+| Tailwind CSS 4, Lucide React | UI styling and icons | `frontend/app/globals.css`, `frontend/package.json` |
+| FastAPI, Pydantic, Uvicorn | HTTP API, request validation, dependency-based role checks, ASGI server, generated OpenAPI docs | `backend/app/main.py`, `backend/app/api/` |
+| Supabase Auth | Email/password and Google sign-in; sessions and backend bearer-token verification | `frontend/lib/`, `backend/app/core/auth.py` |
+| Supabase PostgreSQL / PostgREST | Organizations, memberships, document/chunk metadata, research state, reports, citation sources, evaluations; RLS and membership invariants | `database/migrations/`, `backend/app/db/repositories/` |
+| Supabase Storage | Store original uploaded files for asynchronous processing | `backend/app/services/document_storage.py` |
+| pypdf / python-docx | Extract PDF text with page provenance and DOCX body paragraphs; TXT/Markdown use text parsing | `backend/app/services/document_parser.py` |
+| OpenAI embeddings | Embed document chunks and search queries; default `text-embedding-3-small`, 1536 dimensions | `backend/app/services/embeddings.py` |
+| Qdrant | Store chunk vectors and metadata; semantic search always filters by organization, optionally by document | `backend/app/services/vector_store.py` |
+| OpenAI chat models | Plan questions, extract evidence, detect gaps, synthesize reports, optionally judge answer quality; default `gpt-4o-mini` | `backend/app/agents/llm.py`, `backend/app/agents/nodes/` |
+| Research runner / optional LangGraph | Production workers use an explicit Python node runner; `build_research_graph()` also exposes a compiled LangGraph | `backend/app/agents/research_graph.py` |
+| Redis | Document/research queues, query-embedding and retrieval caching, per-user usage counters and concurrent-run slots | `backend/app/services/job_queue.py`, `backend/app/cache/`, `backend/app/services/llm_guardrails.py` |
+| Langfuse | Research traces, node spans, LLM generations/usage, versioned system prompts with local fallback | `backend/app/core/observability.py`, `backend/app/services/prompt_service.py` |
+| Docker Compose | Run API, frontend, both workers, and Redis together | `docker-compose.yml` |
+| pytest, ESLint, benchmark scripts | Backend/database checks, frontend linting, mocked performance regression checks | `backend/tests/`, `database/tests/`, `scripts/` |
+
+**These are pipeline integrations, not an autonomous tool-calling marketplace.**
+The active research workflow retrieves uploaded documents through Python services;
+empty files named `web_search.py`, `calculator.py`, or `mcp/server.py` do not
+represent working integrations. LangChain, `rank-bm25`, and FastMCP appear in
+`requirements.txt`, but that alone does not implement hybrid search or MCP serving.
+
+Supabase, Qdrant, and Langfuse are external services in the supplied deployment.
+Compose runs **five local processes/services**: frontend, backend, document worker,
+research worker, and Redis. It does not provision the external services.
 
 ## 2. Repository layout
 
-```
-agentflow-ai/
+```text
+AgenticFlow-AI/
 ├── backend/
 │   ├── app/
-│   │   ├── api/        # API routers (health, auth, documents, research, ...)
-│   │   ├── agents/     # LangGraph agent modules (later phases)
-│   │   ├── core/       # config, logging, exceptions, langfuse
-│   │   ├── db/         # Supabase client + repositories
-│   │   ├── llm/        # OpenAI clients
-│   │   ├── models/     # (later phases)
-│   │   ├── rag/        # Qdrant / embeddings (later phases)
-│   │   ├── schemas/    # Pydantic API schemas
-│   │   ├── services/   # health + business services
-│   │   ├── tools/      # agent tools (later phases)
-│   │   └── main.py     # FastAPI entrypoint
-│   ├── tests/          # pytest suite
-│   ├── requirements.txt
+│   │   ├── api/             # Auth, organizations, documents, research, reports, evaluations
+│   │   ├── agents/          # Research state, prompts, runner, and processing nodes
+│   │   ├── core/            # Settings, authentication, RBAC, tracing, logging
+│   │   ├── db/              # Supabase client and repositories
+│   │   ├── services/        # Ingestion, retrieval, reports, evaluation, quotas, queues
+│   │   ├── workers/         # Document and research queue consumers
+│   │   ├── cache/           # Redis client
+│   │   ├── llm/             # Shared LLM client helpers
+│   │   ├── rag/             # Mostly scaffolding; active RAG lives in services/
+│   │   ├── tools/           # Reserved tool modules (not implemented)
+│   │   ├── mcp/             # Reserved MCP server (not implemented)
+│   │   └── main.py          # FastAPI entrypoint
+│   ├── tests/
 │   ├── Dockerfile
 │   └── .env.example
 ├── frontend/
-│   ├── app/            # App Router pages (login, signup, dashboard, ...)
-│   ├── components/     # UI components
-│   ├── lib/            # env config, API client, Supabase clients
-│   ├── hooks/          # (later phases)
-│   ├── types/          # (later phases)
+│   ├── app/                 # Pages, auth callbacks, organization/invitation API routes
+│   ├── components/
+│   ├── lib/                 # API, Supabase, organization and authorization helpers
+│   ├── scripts/             # Environment diagnostics
 │   ├── package.json
-│   ├── Dockerfile
 │   └── .env.example
 ├── database/
-│   ├── migrations/     # Supabase/PostgreSQL migrations (001-011)
+│   ├── migrations/          # Ordered SQL migrations 001–018
+│   ├── tests/               # PostgreSQL-backed policy and membership tests
 │   └── seed.sql
-├── infrastructure/
-│   ├── docker/         # Image documentation
-│   └── redis/          # Dev Redis configuration
-├── scripts/            # Dev helper scripts
+├── infrastructure/          # Docker notes and Redis configuration
+├── scripts/                 # Startup, health, benchmarks, Langfuse prompt seeding
 ├── docker-compose.yml
-├── .gitignore
-├── README.md
+├── pyproject.toml
+├── requirements.txt
 └── .env.example
 ```
 
@@ -79,7 +126,7 @@ agentflow-ai/
 
 - Python **3.10+** (3.11 and 3.12 also work: the code stays inside the 3.10
   stdlib surface, and `python -m pytest` enforces that)
-- Node.js **20+** and npm **10+**
+- Node.js **20.9+** and npm **10+**
 - Docker + Docker Compose (optional, for the containerized stack)
 - Accounts / endpoints for the external services:
   - [OpenAI](https://platform.openai.com) — API key
@@ -93,8 +140,8 @@ agentflow-ai/
 ### 4.1 Clone & configure
 
 ```bash
-git clone <repository-url>
-cd agentflow-ai
+git clone https://github.com/adityanaranje/AgenticFlow-AI.git
+cd AgenticFlow-AI
 
 # Backend environment
 cp backend/.env.example backend/.env         # fill in real values
@@ -125,6 +172,11 @@ or:
 ./scripts/bootstrap.sh
 ```
 
+Use `requirements.txt` for the full runtime: it includes document parsers,
+`python-multipart`, and LangGraph that are not all declared in `pyproject.toml`.
+Before uploading, apply migrations **001–018** as described in section 12 and
+configure the hosted services. Start Redis and **both workers**, not just the API.
+
 ### 4.3 Frontend
 
 ```bash
@@ -142,8 +194,8 @@ npm install
 | `OPENAI_API_KEY`                  | backend    |    🔒    | Backend-only                              |
 | `OPENAI_MODEL`                    | backend    |          | Default `gpt-4o-mini`                     |
 | `OPENAI_EMBEDDING_MODEL`          | backend    |          | Default `text-embedding-3-small`          |
-| `SUPABASE_URL`                    | both       |    ✅    | Project URL                               |
-| `SUPABASE_ANON_KEY`               | both       |    ✅    | Public anon key (browser-safe)            |
+| `SUPABASE_URL`                    | backend       |    ✅    | Project URL                               |
+| `SUPABASE_ANON_KEY`               | backend       |    ✅    | Public anon key (browser-safe)            |
 | `SUPABASE_SERVICE_ROLE_KEY`       | backend    |    🔒    | **Never expose to the browser**           |
 | `QDRANT_URL`                      | backend    |    🔒    | Cluster URL                               |
 | `QDRANT_API_KEY`                  | backend    |    🔒    | **Never expose to the browser**           |
@@ -195,11 +247,11 @@ legacy keys still work while enabled, but new projects only get the new ones.
 ### 5.1 LLM usage guardrails
 
 Research runs make a chain of model calls, so per-user token spend is
-bounded at four levels (all Redis-backed, all `0` = unlimited; degrades to
-"allowed" when Redis is down, so a missing Redis never breaks dev setups):
+controlled at four levels. User counters and admission slots are Redis-backed
+and fail open when Redis is unavailable; the per-run token budget is tracked in
+the worker. `0` disables the corresponding limit. These are usage controls, not
+a guaranteed billing cap: a model call can cross the budget before the next check.
 
-| Level            | Setting                        | Enforced where        | On breach                                    |
-| ---------------- | ------------------------------ | --------------------- | -------------------------------------------- |
 | Level            | Setting                        | Default | Enforced where        | On breach                                    |
 | ---------------- | ------------------------------ | ------- | --------------------- | -------------------------------------------- |
 | Per user / hour  | `LLM_USER_TOKEN_LIMIT_HOURLY`  | 100k    | dispatch (API)        | `429` with the window + used/limit details   |
@@ -208,7 +260,7 @@ bounded at four levels (all Redis-backed, all `0` = unlimited; degrades to
 | Per run          | `LLM_RUN_TOKEN_BUDGET`         | 100k    | worker, before each model call | run fails with a clear error; work so far is persisted |
 
 **How much is left?** `GET /api/v1/organizations/{org}/research/quota`
-(authenticated, viewer+) returns the caller's remaining budget:
+(authenticated, researcher+) returns the caller's remaining budget:
 
 ```json
 {
@@ -364,6 +416,8 @@ docker compose up --build
 | frontend   | `agentflow-frontend` | http://localhost:3000          |
 | backend    | `agentflow-backend`  | http://localhost:8000/health   |
 | redis      | `agentflow-redis`    | redis://localhost:6379/0       |
+| document-worker | `agentflow-document-worker` | No HTTP port; consumes ingestion jobs |
+| research-worker | `agentflow-research-worker` | No HTTP port; consumes research jobs |
 
 The frontend image bakes `NEXT_PUBLIC_*` values into the browser bundle at
 **build** time, so `docker compose build` fails with a `BUILD ERROR:` line when
@@ -528,7 +582,7 @@ curl http://localhost:8000/health
 
 ## 12. Database migrations
 
-SQL migrations live in `database/migrations/` (extensions, profiles,
+SQL migrations **001–018** live in `database/migrations/` (extensions, profiles,
 organizations, documents, research, reports, evaluations, RLS, storage,
 indexes, member management). Apply them in a Supabase SQL editor or via
 `psql`, in filename order, then run `database/seed.sql` for development data
@@ -594,35 +648,281 @@ server-side via `resolve_invitable_email`, which repeats the admin check.
 The frontend helpers in `lib/organizations/rbac.ts` only shape the UI; RLS,
 the guard trigger, and `backend/app/core/rbac.py` are the security boundary.
 
-## 13. Phase 1 completion checklist
+## 13. Features and user journey
 
-- [x] Backend starts successfully
-- [x] Frontend starts successfully
-- [x] `GET /health` works (structured, degraded-safe)
-- [x] Connectivity wiring for OpenAI, Supabase, Qdrant, Redis, Langfuse
-- [x] Frontend `npm run lint` + `npm run build` pass
-- [x] Backend `pytest` passes
-- [x] No hard-coded secrets; `.env.example` files exist at root/backend/frontend
+1. **Sign in and create an organization.** Use email/password or configured Google
+   OAuth. The dashboard lists organizations and pending invitations.
+2. **Collaborate with role-based access.** Owners/admins invite members; recipients
+   accept or decline in-app. Viewer, researcher, admin, and owner permissions are
+   enforced beyond the UI through API authorization and database policies.
+3. **Build the knowledge base.** A researcher+ uploads PDF, DOCX, TXT, or Markdown.
+   Document pages show processing state and stored chunks, support document-scoped
+   semantic retrieval, and allow failed documents to be reprocessed. Admin+ can
+   delete documents.
+4. **Ask a research question.** Submit a question about the uploaded material.
+   The API queues the run and the research page polls persisted progress rather
+   than holding the request open for all model calls. Researcher+ can inspect
+   their remaining token quota.
+5. **Follow or cancel the run.** Inspect planning/retrieval/analysis/synthesis
+   progress. The run creator or an organization admin/owner can cancel it.
+6. **Review the report and its evidence.** Report detail includes Markdown content,
+   structured sections, confidence, and source mappings back to document chunks.
+   Admin+ can delete reports.
+7. **Inspect quality metrics.** Research schedules an automatic evaluation after
+   storing the report. Researcher+ can also evaluate an existing report through
+   the API; evaluation pages expose scores and explanations.
 
-## 14. Known limitations (Phase 1)
+Example use case: upload product specifications and support notes, then ask
+“Which onboarding issues recur across these documents, and what improvements
+are supported by the evidence?” The answer is based on the organization's
+indexed files—not a live crawl of the public web.
 
-- Health checks report `Not configured`/`down` until real credentials are
-  supplied — there is no bundled local Supabase/Qdrant/Langfuse.
-- Backend API routers for auth/organizations/documents/research/reports/
-  evaluations are registered placeholders (no endpoints yet, by design).
-- Dockerfiles and compose are validated as configuration; image builds
-  require Docker with network access to registries.
-- Qdrant collection creation, Redis cache keys and Langfuse tracing
-  call-sites arrive with their consuming features in later phases.
+## 14. End-to-end AI pipeline
 
-## 15. Next phase (Phase 2 — expected scope)
+### 14.1 Document ingestion: files → searchable knowledge
 
-Multi-tenant foundation: organization CRUD, membership/roles, Supabase RLS
-aligned endpoints (`/api/v1/organizations`, `/api/v1/auth`), document upload
-to Supabase Storage with metadata persistence in PostgreSQL, and backend
-test coverage for those flows. Phase 2 should not start until explicitly
-instructed.
+```mermaid
+flowchart LR
+    A[Authenticated upload] --> B[Validate type and size]
+    B --> C[Store file and document metadata]
+    C --> D[Enqueue document ID in Redis]
+    D --> E[Document worker downloads file]
+    E --> F[Parse and normalize text]
+    F --> G[Overlapping paragraph-aware chunks]
+    G --> H[Persist document_chunks]
+    H --> I[Batch OpenAI embeddings]
+    I --> J[Upsert Qdrant vectors and payloads]
+    J --> K[Mark document completed]
+```
 
----
+- Upload uses a multipart `file` field, streamed into bounded reads before the
+  storage operation. The default maximum is **25 MB** (`MAX_UPLOAD_SIZE_MB`).
+- Originals live in the Supabase `documents` storage bucket (`STORAGE_BUCKET`).
+  PostgreSQL holds document ownership, processing state, and chunk records.
+- PDF extraction preserves page numbers; DOCX/TXT/Markdown are not page-layout
+  parsers. Text is normalized before splitting.
+- Chunking is **character-based**, not exact token splitting: defaults are
+  `CHUNK_SIZE=1500` and `CHUNK_OVERLAP=200`. Chunks carry indexes, text,
+  approximate token counts, and available page/section metadata.
+- OpenAI embedding batches and Qdrant upserts run with bounded concurrency.
+  `EMBEDDING_DIMENSIONS=1536` must match the embedding model and collection.
+- Qdrant payloads connect each vector to its organization, document, chunk,
+  content, filename, and page provenance. PostgreSQL remains the metadata store.
+- Processing failures are recorded on the document. Reprocessing targets failed
+  documents and rebuilds derived data from the stored original.
+- When queue dispatch is unavailable, ingestion has a bounded in-process
+  fallback. When Redis accepts jobs, keep the document worker running; an API
+  process alone is not a queue consumer.
 
-*Phase 1 — Project Foundation and Infrastructure.*
+Main implementation: `document_service.py`, `document_parser.py`, `chunking.py`,
+`embeddings.py`, `vector_store.py` under `backend/app/services/`, plus
+`backend/app/workers/document_worker.py`.
+
+### 14.2 Research: question → evidence → report
+
+```mermaid
+flowchart TD
+    A[Question and validated run config] --> B[JWT, membership, role, quota checks]
+    B --> C[Persist queued research run]
+    C --> D[Redis dispatch and research worker]
+    D --> P[Planner]
+    P --> R[Retriever]
+    R --> E[Evidence analyzer]
+    E --> G[Gap detector]
+    G -->|Follow-up queries and iterations remaining| R
+    G -->|Sufficient evidence or iteration limit| S[Synthesis]
+    S --> V[Citation validator]
+    V --> F[Finalizer]
+    F --> DB[Store report and validated source mappings]
+    DB --> Q[Background evaluation]
+    DB --> UI[Report and sources in UI]
+```
+
+| Stage | Input → output | Behavior |
+| --- | --- | --- |
+| Admission/dispatch | User question → persisted run ID | Requires researcher+; validates config, checks per-user quota/concurrency, returns HTTP `202` |
+| Planner | Original question → sub-questions and search queries | LLM-assisted decomposition with bounded output and fallback behavior |
+| Retriever | Queries → deduplicated document chunks | Batch query embeddings, concurrent Qdrant searches, mandatory tenant scope; default `RESEARCH_TOP_K=5` |
+| Evidence analyzer | Retrieved chunks → structured evidence | Extracts claims tied to source chunks; batches excerpts to bound prompt size and parallelizes independent calls |
+| Gap detector | Question and evidence summary → gaps/follow-up queries | Repeats retrieval when needed; default `MAX_RESEARCH_ITERATIONS=3` permits up to three retries after the initial pass |
+| Synthesis | Evidence and question → Markdown draft | Uses evidence labels such as `[E0]`, `[E1]` for traceable references |
+| Citation validator | Draft labels and evidence → citation mappings | Rejects out-of-range evidence references from the citation list and records errors; this is not a semantic fact-check of every claim |
+| Finalizer | Draft and evidence → final report, sections, confidence | Parses sections, derives a confidence heuristic, and applies the report-length guardrail with a truncation notice |
+| Persistence | Final state → `reports` and `report_sources` | Stores validated source metadata, checks source references, and persists the terminal research state |
+| Evaluation | Stored report and sources → evaluation run/results | Computes citation/retrieval heuristics and optional LLM quality judgment without modifying the report |
+
+The worker runs `run_research()` in
+[`backend/app/agents/research_graph.py`](backend/app/agents/research_graph.py).
+It is an explicit Python orchestration loop, **not a requirement to run a
+LangGraph server**. The same module provides `build_research_graph()` for callers
+that want the optional compiled graph interface.
+
+Progress statuses include `queued`, `planning`, `retrieving`, `analyzing`,
+`checking_gaps`, `synthesizing`, and `validating`, followed by `completed`,
+`failed`, or `cancelled`. Intermediate writes contain compact progress data;
+terminal writes preserve fuller state. Cancellation is cooperative at pipeline
+checkpoints, not an immediate interruption of an in-flight provider request.
+
+Research dispatch can fall back to the API process when Redis is unavailable.
+An unclaimed queued job can also be taken over after
+`RESEARCH_UNCLAIMED_FALLBACK_SECONDS` (default 15); set it to `0` to require a
+worker. Use dedicated workers for normal operation rather than relying on this
+single-process recovery path.
+
+### 14.3 Evaluation: what the scores actually mean
+
+| Metric | Implemented calculation | Interpretation |
+| --- | --- | --- |
+| Citation correctness | Fraction of distinct referenced evidence labels present in stored grounded sources | Valid source mappings, not proof the text entails the claim |
+| Citation completeness | Fraction of stored source labels cited in the report | Source utilization, not coverage of every factual assertion |
+| Groundedness | Fraction of report sentences containing a citation marker | Citation-density heuristic, not semantic entailment |
+| Relevance | Mean available retrieval score in source metadata, clamped to `[0,1]` | Retrieval similarity proxy |
+| Answer quality | Optional LLM judgment of report content; objective metric mean if unavailable | A model/heuristic score, not a human-reviewed quality guarantee |
+
+Results and explanations are saved in `evaluation_runs` / `evaluation_results`.
+Automatic evaluation is best-effort and does not invalidate an otherwise stored
+report if evaluation fails. Human review is still needed for important decisions.
+
+### 14.4 Observability, prompts, and feedback
+
+- Langfuse records a research-run trace with nested node spans and model
+  generations. Inspect model usage and stage latency there; inspect API/worker
+  logs for ingestion, queue, or persistence errors.
+- Named system prompts are fetched through `prompt_service.py`; in-code prompts
+  are fallbacks when prompt management is unavailable. Set
+  `PROMPT_CACHE_TTL_SECONDS` to control refresh frequency (`0` for development).
+- Seed the configured Langfuse project from repository defaults:
+
+  ```bash
+  # From the repository root, using backend/.env
+  (cd backend && ../.venv/bin/python ../scripts/seed_langfuse_prompts.py)
+  ```
+
+  Existing prompts are left unchanged. Add `--force` only when intentionally
+  publishing new `production` versions from code. The seeder also contains
+  reserved prompts; seeding them does not enable unfinished functionality.
+- Review low-scoring reports, inspect retrieved chunks and gaps, improve source
+  documents or prompts, then rerun research and compare evaluations. This is a
+  manual improvement loop; there is no automatic model training/fine-tuning pipeline.
+
+## 15. API walkthrough
+
+Interactive API documentation is at **http://localhost:8000/docs**, with the
+schema at `/openapi.json`. Protected API calls use a Supabase access token:
+`Authorization: Bearer <access-token>`. User identity comes from the verified
+session; client-supplied ownership is not trusted.
+
+For the table below, `BASE=/api/v1/organizations/{organization_id}`:
+
+| Method | Path under `BASE` | Purpose / minimum permission |
+| --- | --- | --- |
+| POST | `/documents/upload` | Multipart upload; researcher+ |
+| GET | `/documents`, `/documents/{id}`, `/documents/{id}/chunks` | Inspect knowledge base; viewer+ |
+| GET | `/documents/{id}/retrieve?query=...&top_k=5` | Search one document; viewer+ |
+| POST | `/documents/{id}/reprocess` | Retry failed ingestion; researcher+ |
+| DELETE | `/documents/{id}` | Remove document and derived data; admin+ |
+| POST | `/research` | Queue research; researcher+ |
+| GET | `/research`, `/research/{id}` | List runs / poll progress; viewer+ |
+| GET | `/research/quota` | Current user's usage and remaining budget; researcher+ |
+| POST | `/research/{id}/cancel` | Run creator or organization admin/owner |
+| GET | `/reports`, `/reports/{id}` | Stored reports and source details; viewer+ |
+| DELETE | `/reports/{id}` | Delete report; admin+ |
+| GET | `/evaluations`, `/evaluations/{id}` | Inspect evaluation runs/results; viewer+ |
+| POST | `/evaluations` | Evaluate an existing report; researcher+ |
+
+### Example: upload → research → review
+
+Set `ACCESS_TOKEN` privately to your current Supabase session token and `ORG_ID`
+to an organization you belong to. Do not commit tokens or paste them into logs.
+
+```bash
+API_URL=http://localhost:8000
+BASE="$API_URL/api/v1/organizations/$ORG_ID"
+
+# Upload a supported file. Save document.id from the JSON response.
+curl --fail-with-body -X POST "$BASE/documents/upload" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -F "file=@./notes.pdf;type=application/pdf"
+
+# Set DOCUMENT_ID to that ID; wait until ingestion reports completed.
+curl --fail-with-body "$BASE/documents/$DOCUMENT_ID" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Queue a research question. Save id from the 202 response as RUN_ID.
+curl --fail-with-body -X POST "$BASE/research" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"What are the key findings and unresolved issues in these documents?","config":{"top_k":5,"max_iterations":2}}'
+
+# Poll progress, then list the generated reports to find REPORT_ID.
+curl --fail-with-body "$BASE/research/$RUN_ID" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+curl --fail-with-body "$BASE/reports" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+curl --fail-with-body "$BASE/reports/$REPORT_ID" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Optional: explicitly evaluate the report again.
+curl --fail-with-body -X POST "$BASE/evaluations" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"report_id\":\"$REPORT_ID\"}"
+```
+
+Use the UI or the registered organization/auth endpoints for organization setup;
+Next.js also has same-origin organization/invitation routes under `frontend/app/api/`.
+Those routes are separate from FastAPI's `/api/v1` surface.
+
+## 16. Implementation boundaries and limitations
+
+- **Document-grounded research, not general web research.** Files in
+  `backend/app/tools/` (web search, calculator, database, document search),
+  `backend/app/mcp/server.py`, and most of `backend/app/rag/` are empty scaffolds.
+  There is no implemented MCP endpoint, web search provider, BM25 hybrid retrieval,
+  or reranking stage. Active RAG code is in `backend/app/services/`.
+- **No OCR pipeline.** Image-only/scanned PDFs need text extraction outside this
+  application first. No audio/video ingestion or model training is implemented.
+- **External services and cost.** A running UI/health endpoint does not prove that
+  ingestion or research can complete. Configure Supabase, OpenAI, Qdrant, and Redis;
+  Langfuse is needed for hosted traces/prompts but local prompt fallbacks exist.
+  Model/embedding requests incur provider charges.
+- **Cache freshness.** Retrieval results may remain stale until their Redis TTL
+  expires after documents change. Tune `REDIS_TTL_SECONDS` or disable retrieval
+  caching when immediate freshness is more important than repeated-query savings.
+- **Guardrails are not hard financial guarantees.** Redis-backed admission checks
+  fail open without Redis, usage is recorded after model calls, and parallel calls
+  can exceed a threshold. Keep Redis healthy and configure provider-side budgets.
+- **Timeout setting caveat.** `RESEARCH_TIMEOUT_SECONDS` exists in configuration,
+  but the production runner does not enforce it as a whole-run deadline. Provider
+  request timeouts and bounded retries/iterations are the implemented controls.
+- **Citation validation has limits.** Invalid labels are excluded from source
+  mappings and logged in state; that does not guarantee every invalid marker is
+  removed from report prose. Evaluation and human review remain necessary.
+- **Deployment needs hardening.** Compose is a development topology, not a complete
+  production platform. Review TLS, secret management, Redis exposure, backups,
+  worker recovery, observability, and service-level security before deployment.
+  Root `.env` values are not automatically forwarded to containers: ensure any
+  custom setting is included in Compose's shared backend environment.
+- **Remote browser configuration.** `localhost` examples assume the browser runs
+  on the developer's machine. For hosted previews, use a browser-reachable API
+  origin or configure a same-origin reverse proxy; set `FRONTEND_URL` to the actual
+  frontend origin and update Supabase redirect allowlists. Never use a container
+  hostname or sandbox `localhost` as a remote browser's backend URL.
+
+### Troubleshooting the pipeline
+
+| Symptom | Check |
+| --- | --- |
+| Document stays `pending` | Redis connectivity and the document worker; inspect `docker compose logs document-worker` |
+| Research stays `queued` | Research worker, queue connectivity, and unclaimed-job fallback setting |
+| Ingestion fails during embedding/upsert | OpenAI quota/key, Qdrant URL/key, embedding dimensions, collection configuration, worker logs |
+| Research retrieves no relevant chunks | Documents completed ingestion, correct organization/document filter, cache freshness, relevant source text |
+| `401` / `403` | Supabase session, project/key pair, organization membership, required role |
+| `429` on research submission | `/research/quota`, hourly/daily usage, concurrent runs |
+| Missing tables, relationships, or invitation behavior | Apply every migration through `018`, not just the initial schema |
+| Missing traces or old prompts | Langfuse credentials/host, prompt labels, prompt cache TTL; core prompt fallbacks can hide tracing outages |
+| Frontend builds but browser cannot call API | Build-time `NEXT_PUBLIC_API_URL`, reachable backend origin, CORS `FRONTEND_URL` |
+
+Further operational notes: [scripts](scripts/README.md),
+[Docker](infrastructure/docker/README.md), [Redis](infrastructure/redis/README.md),
+and [member-management migration guide](database/APPLY_MEMBER_MANAGEMENT.md).
