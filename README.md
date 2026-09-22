@@ -1,36 +1,139 @@
 # AgentFlow AI
 
-Production-oriented, multi-tenant **AI research platform**. Organizations upload
-documents, build a searchable knowledge base, run AI-powered research,
-generate reports, and evaluate the quality of generated answers.
+Multi-tenant **AI research platform**. An organization uploads its documents,
+AgentFlow turns them into a searchable knowledge base, and an agentic workflow
+researches questions against *only* that knowledge base — producing reports
+where every claim carries a citation back to a source chunk.
 
-> **Status: Phase 1 — Project Foundation & Infrastructure**
-> This phase delivers the application shell, health-checked service wiring and
-> development infrastructure. AI functionality (RAG, agents, evaluation) is
-> intentionally **not** implemented yet — no fake AI endpoints are exposed.
+The emphasis throughout is **grounding**: answers are assembled from retrieved
+evidence, citations are validated before a report is stored, and ungrounded
+sources are discarded rather than presented.
 
 ---
 
-## 1. Architecture
+## What it does
 
-| Layer         | Technology                                                                 |
-| ------------- | -------------------------------------------------------------------------- |
-| Frontend      | Next.js (App Router) · TypeScript · React · Supabase Auth · Supabase Storage |
-| Backend       | Python 3.10+ · FastAPI · LangChain · LangGraph · OpenAI                     |
-| Infrastructure| Supabase (PostgreSQL + Storage) · Qdrant · Redis · Langfuse                |
-| AI            | OpenAI models · Embeddings · RAG · Agentic research workflow (LangGraph)   |
-| Observability | Langfuse                                                                   |
+| | |
+| --- | --- |
+| **Ingest** | Upload PDF / DOCX / TXT / MD. A background worker parses, chunks, embeds and indexes each file, with per-document progress and reprocessing. |
+| **Retrieve** | Vector search over Qdrant, scoped to one organization, returning chunks with provenance (document, page, chunk index). |
+| **Research** | A LangGraph agent plans sub-questions, retrieves evidence, detects gaps, loops for more evidence, then synthesises an answer. |
+| **Cite & verify** | A citation-validation step checks every claim maps to real retrieved evidence; unsupported sources are dropped before the report is saved. |
+| **Report** | Generated reports are stored per organization, listed and readable in the UI. |
+| **Evaluate** | Each report is scored for `groundedness` (share of sentences carrying a citation) and `relevance` (mean retrieval score of cited sources). |
+| **Collaborate** | Organizations with four roles, in-app join requests (accept/decline from your dashboard), and invariants enforced by database triggers. |
+| **Stay in budget** | Per-user hourly/daily token limits, a concurrent-run cap and a per-run token budget, all Redis-backed. |
+
+### Feature detail
+
+**Documents.** Upload is size-capped (`MAX_UPLOAD_SIZE_MB`, default 25 MB) and
+streamed to Supabase Storage; metadata and chunks live in PostgreSQL. Parsing,
+chunking, embedding and vector upsert happen in a **background worker** so the
+request returns immediately, and every stage is batched and concurrency-tuned
+(see §9). A failed document can be reprocessed without re-uploading.
+
+**Research.** A run is queued to a second worker and progresses through the
+graph below. Runs can be cancelled, and the UI polls status and shows the
+finished report with its citations.
+
+**Roles.** `owner > admin > researcher > viewer`. Viewers read; researchers
+additionally upload and run research; admins manage members; owners control
+ownership and deletion. The role matrix is in §12 — and the rules are enforced
+by a PostgreSQL trigger plus RLS, not only by the UI.
+
+---
+
+## 1. Which tool does what
+
+Every dependency below is actually used; nothing is listed aspirationally.
+
+### Core stack
+
+| Tool | Used for | Where |
+| --- | --- | --- |
+| **Next.js 16** (App Router) + **React 19** | The whole UI, server-rendered. Server Components read Supabase directly; Route Handlers under `app/api/**` proxy privileged mutations. | `frontend/app` |
+| **TypeScript** + **Tailwind CSS v4** | Types across the frontend; all styling (no component library). | `frontend/` |
+| **lucide-react** | Icon set. | `frontend/components` |
+| **FastAPI** + **Uvicorn** | The backend HTTP API (`/api/v1/...`) and its OpenAPI docs. | `backend/app/api` |
+| **Pydantic** / **pydantic-settings** | Request/response schemas and typed, env-driven configuration. | `backend/app/api/schemas.py`, `core/config.py` |
+| **Supabase** | Three distinct jobs: **Auth** (email + Google OAuth), **PostgreSQL** (all relational data, RLS, triggers, `security definer` functions), and **Storage** (uploaded files). | everywhere |
+| **PostgreSQL (via Supabase)** | Source of truth *and* the security boundary — RLS policies and the `organization_members_guard` trigger enforce the role rules. | `database/migrations` |
+
+### AI / retrieval
+
+| Tool | Used for | Where |
+| --- | --- | --- |
+| **OpenAI** | Chat completions (`OPENAI_CHAT_MODEL`, default `gpt-4o-mini`) for planning, evidence analysis and synthesis; embeddings (`OPENAI_EMBEDDING_MODEL`) for indexing and query vectors. | `backend/app/llm`, `services/embeddings.py` |
+| **LangGraph** | Orchestrates the research workflow as a state graph with a **conditional loop** — the gap detector can send the run back to retrieval before synthesis. | `backend/app/agents/research_graph.py` |
+| **LangChain** | Model client wrappers used by the agent nodes. | `backend/app/llm/models.py` |
+| **Qdrant** | Vector database. Stores chunk embeddings, filtered by `organization_id` so tenants can never retrieve each other's content. | `backend/app/services/vector_store.py`, `rag/qdrant.py` |
+| **pypdf** / **python-docx** | Extracting text from PDF and DOCX uploads, preserving page and heading structure. | `backend/app/services/document_parser.py` |
+| **Langfuse** | LLM tracing/observability, plus **prompt management** — prompts are fetched from Langfuse with a local fallback and a short TTL cache. | `backend/app/core/observability.py`, `services/prompt_service.py` |
+
+### Infrastructure
+
+| Tool | Used for | Where |
+| --- | --- | --- |
+| **Redis** | Four jobs: the **job queue** feeding both workers, **caching** (LLM responses, embeddings, retrieval results), **token-quota counters**, and **concurrency locks**. | `backend/app/cache`, `services/job_queue.py`, `llm_guardrails.py` |
+| **Background workers** | Two long-running consumers — `document_worker` (parse → chunk → embed → index) and `research_worker` (run the graph). Both shut down gracefully. | `backend/app/workers` |
+| **Docker Compose** | Runs backend, both workers, frontend and Redis together. | `docker-compose.yml` |
+| **pytest** | Backend tests, plus a SQL suite that runs migrations against a real ephemeral PostgreSQL (`pgserver`) to test triggers and RLS. | `backend/tests`, `database/tests` |
+| **ESLint** | Frontend linting (`npx eslint app components lib --ext .ts,.tsx`). | `frontend/` |
+
+> **Declared but unused:** `rank-bm25` and `fastmcp` appear in
+> `requirements.txt`, and `backend/app/rag/hybrid.py`, `rag/reranker.py`,
+> `app/tools/*` and `app/mcp/server.py` are empty placeholders. Hybrid BM25
+> search, reranking, agent tools and the MCP server are **not** implemented
+> yet — retrieval today is pure vector search.
+
+### How the pieces talk
 
 ```
-Browser ──► Next.js (frontend, :3000) ──► FastAPI (backend, :8000) ──► OpenAI
-   │                                                                    │
-   ├─ Supabase Auth (browser)            Redis (cache) ◄────────────────┘
-   └─ Supabase Storage / PostgREST        Qdrant (vector DB)
-                                          Langfuse (traces / prompts)
+                 ┌──────────────── Supabase Auth (session cookie)
+                 │
+Browser ──► Next.js :3000 ──► FastAPI :8000 ──► OpenAI (chat + embeddings)
+   │              │                │
+   │              │                ├──► Qdrant     (vector search)
+   │              │                ├──► Redis      (queue, cache, quotas)
+   │              │                ├──► Supabase   (PostgreSQL + Storage)
+   │              │                └──► Langfuse   (traces + prompts)
+   │              │
+   │              └─ Server Components read PostgreSQL through PostgREST,
+   │                 constrained by the caller's RLS policies
+   │
+   └─ Uploads go to Supabase Storage
+
+                 Redis queue
+FastAPI ──enqueue──► ├──► document-worker  : parse → chunk → embed → Qdrant
+                     └──► research-worker  : LangGraph run → report → evaluation
 ```
 
-External managed services (Supabase, Qdrant, Langfuse) are **not** duplicated
-locally; the development stack runs only the backend, frontend and Redis.
+Supabase, Qdrant and Langfuse are **managed services** — they are not run
+locally. The local stack is backend + workers + frontend + Redis.
+
+### The research graph
+
+```
+START → planner → retriever → evidence_analyzer → gap_detector
+                     ▲                                 │
+                     └────── more evidence needed ──────┤
+                            (max_iterations)            ▼
+                                                    synthesis
+                                                        ↓
+                                               citation_validator
+                                                        ↓
+                                                    finalizer → END
+```
+
+| Node | Responsibility |
+| --- | --- |
+| `planner` | Break the question into sub-questions. |
+| `retriever` | Vector-search the org's chunks for each sub-question. |
+| `evidence_analyzer` | Extract and score the evidence that actually answers them. |
+| `gap_detector` | Decide whether evidence is sufficient; if not, loop back with new queries (bounded by `MAX_RESEARCH_ITERATIONS`). |
+| `synthesis` | Write the answer from the gathered evidence. |
+| `citation_validator` | Check each citation resolves to real retrieved evidence. |
+| `finalizer` | Assemble the report and persist only grounded sources. |
 
 ## 2. Repository layout
 
@@ -38,41 +141,38 @@ locally; the development stack runs only the backend, frontend and Redis.
 agentflow-ai/
 ├── backend/
 │   ├── app/
-│   │   ├── api/        # API routers (health, auth, documents, research, ...)
-│   │   ├── agents/     # LangGraph agent modules (later phases)
-│   │   ├── core/       # config, logging, exceptions, langfuse
-│   │   ├── db/         # Supabase client + repositories
-│   │   ├── llm/        # OpenAI clients
-│   │   ├── models/     # (later phases)
-│   │   ├── rag/        # Qdrant / embeddings (later phases)
-│   │   ├── schemas/    # Pydantic API schemas
-│   │   ├── services/   # health + business services
-│   │   ├── tools/      # agent tools (later phases)
-│   │   └── main.py     # FastAPI entrypoint
-│   ├── tests/          # pytest suite
-│   ├── requirements.txt
-│   ├── Dockerfile
-│   └── .env.example
+│   │   ├── api/         # FastAPI routers: health, auth, organizations,
+│   │   │                #   documents, research, reports, evaluations
+│   │   ├── agents/      # LangGraph research graph
+│   │   │   └── nodes/   #   planner, retriever, evidence_analyzer,
+│   │   │                #   gap_detector, synthesis, citation_validator,
+│   │   │                #   finalizer  (other files are placeholders)
+│   │   ├── cache/       # Redis client
+│   │   ├── core/        # config, auth/RBAC, logging, observability
+│   │   ├── db/          # Supabase client + repositories
+│   │   ├── llm/         # OpenAI / LangChain model clients
+│   │   ├── rag/         # Qdrant collection management
+│   │   ├── services/    # ingestion, retrieval, research, reports,
+│   │   │                #   evaluation, membership, guardrails, prompts
+│   │   ├── workers/     # document_worker + research_worker
+│   │   └── main.py      # FastAPI entrypoint
+│   └── tests/           # pytest suite
 ├── frontend/
-│   ├── app/            # App Router pages (login, signup, dashboard, ...)
-│   ├── components/     # UI components
-│   ├── lib/            # env config, API client, Supabase clients
-│   ├── hooks/          # (later phases)
-│   ├── types/          # (later phases)
-│   ├── package.json
-│   ├── Dockerfile
-│   └── .env.example
+│   ├── app/             # App Router: landing, auth, dashboard,
+│   │                    #   organizations/{id}/{documents,research,
+│   │                    #   reports,evaluations,members}, api/ handlers
+│   ├── components/      # auth, brand, documents, evaluations,
+│   │                    #   organizations, research
+│   ├── lib/             # env, Supabase clients, organizations (RBAC,
+│   │                    #   members), API helpers
+│   └── scripts/         # check-env.mjs (`npm run doctor`)
 ├── database/
-│   ├── migrations/     # Supabase/PostgreSQL migrations (001-011)
+│   ├── migrations/      # 001-018, applied in filename order
+│   ├── tests/           # SQL tests against a real ephemeral PostgreSQL
 │   └── seed.sql
-├── infrastructure/
-│   ├── docker/         # Image documentation
-│   └── redis/          # Dev Redis configuration
-├── scripts/            # Dev helper scripts
-├── docker-compose.yml
-├── .gitignore
-├── README.md
-└── .env.example
+├── infrastructure/      # Docker image docs + dev Redis config
+├── scripts/             # dev/bootstrap/benchmark helpers
+└── docker-compose.yml
 ```
 
 ## 3. Prerequisites
@@ -198,8 +298,6 @@ Research runs make a chain of model calls, so per-user token spend is
 bounded at four levels (all Redis-backed, all `0` = unlimited; degrades to
 "allowed" when Redis is down, so a missing Redis never breaks dev setups):
 
-| Level            | Setting                        | Enforced where        | On breach                                    |
-| ---------------- | ------------------------------ | --------------------- | -------------------------------------------- |
 | Level            | Setting                        | Default | Enforced where        | On breach                                    |
 | ---------------- | ------------------------------ | ------- | --------------------- | -------------------------------------------- |
 | Per user / hour  | `LLM_USER_TOKEN_LIMIT_HOURLY`  | 100k    | dispatch (API)        | `429` with the window + used/limit details   |
@@ -208,7 +306,8 @@ bounded at four levels (all Redis-backed, all `0` = unlimited; degrades to
 | Per run          | `LLM_RUN_TOKEN_BUDGET`         | 100k    | worker, before each model call | run fails with a clear error; work so far is persisted |
 
 **How much is left?** `GET /api/v1/organizations/{org}/research/quota`
-(authenticated, viewer+) returns the caller's remaining budget:
+(**researcher+** — the budget only gates *starting* a run, so it is withheld
+from viewers, who cannot start one) returns the caller's remaining budget:
 
 ```json
 {
@@ -417,17 +516,26 @@ pytest database/tests
 The harness stubs Supabase's `auth` schema (`auth.users`, `auth.uid()`,
 `auth.jwt()`), applies every migration in order, and then asserts the
 database — not just the application — refuses privilege escalation:
-member management (`test_member_management.py`) and the in-app invitation
-requests, including directory-enumeration limits
-(`test_invitation_requests.py`).
+member management (`test_member_management.py`), the in-app invitation
+requests including directory-enumeration limits
+(`test_invitation_requests.py`), and profile visibility
+(`test_profile_visibility.py`) — which runs as the `authenticated` role, not
+the RLS-bypassing owner, so the policies are genuinely exercised.
 
 ### Frontend
 
 ```bash
 cd frontend
-npm run lint
+npm install
+npx tsc --noEmit                              # type-check
+npx eslint app components lib --ext .ts,.tsx  # lint
 npm run build
+npm run doctor                                # verify Supabase env vars
 ```
+
+> `npx next lint` has been removed from Next.js — call `eslint` directly.
+> Run `npm install` first: `npx tsc` without `node_modules` silently
+> installs an unrelated `tsc` package and exits 0, which looks like a pass.
 
 ## 9. Ingestion performance
 
@@ -530,13 +638,16 @@ curl http://localhost:8000/health
 
 SQL migrations live in `database/migrations/` (extensions, profiles,
 organizations, documents, research, reports, evaluations, RLS, storage,
-indexes, member management). Apply them in a Supabase SQL editor or via
-`psql`, in filename order, then run `database/seed.sql` for development data
+indexes, member management, profile visibility). Apply them in a Supabase SQL
+editor or via `psql`, in filename order, then run `database/seed.sql` for
+development data
 (it intentionally inserts nothing today — users/orgs are created through the
 app).
 
-> **Upgrading an existing database?** Apply
-> `015_member_management.sql` then `016_invitation_requests.sql` — see
+> **Upgrading an existing database?** Apply `015_member_management.sql`,
+> `016_invitation_requests.sql`, `017_member_profiles_visibility.sql`, then
+> `018_member_profile_relationship.sql` — 017 and 018 are both required or
+> the members list renders empty. See
 > [`database/APPLY_MEMBER_MANAGEMENT.md`](database/APPLY_MEMBER_MANAGEMENT.md)
 > for step-by-step instructions and verification queries.
 
@@ -594,35 +705,84 @@ server-side via `resolve_invitable_email`, which repeats the admin check.
 The frontend helpers in `lib/organizations/rbac.ts` only shape the UI; RLS,
 the guard trigger, and `backend/app/core/rbac.py` are the security boundary.
 
-## 13. Phase 1 completion checklist
+## 13. API reference
 
-- [x] Backend starts successfully
-- [x] Frontend starts successfully
-- [x] `GET /health` works (structured, degraded-safe)
-- [x] Connectivity wiring for OpenAI, Supabase, Qdrant, Redis, Langfuse
-- [x] Frontend `npm run lint` + `npm run build` pass
-- [x] Backend `pytest` passes
-- [x] No hard-coded secrets; `.env.example` files exist at root/backend/frontend
+All backend routes are versioned under `/api/v1` and require a Supabase
+session; every one is additionally authorised against the caller's role in
+the target organization.
 
-## 14. Known limitations (Phase 1)
+**Organizations** — `/api/v1/organizations`
 
-- Health checks report `Not configured`/`down` until real credentials are
+| Method | Path | Min role |
+| --- | --- | --- |
+| `GET` | `` | — (your orgs) |
+| `GET` | `/{id}` | viewer |
+| `GET` | `/{id}/members` | viewer |
+| `POST` | `/{id}/members` | admin |
+| `PATCH` | `/{id}/members/{user_id}` | admin |
+| `DELETE` | `/{id}/members/me` | any member |
+| `DELETE` | `/{id}/members/{user_id}` | admin |
+| `GET` | `/{id}/invitations` | admin |
+| `DELETE` | `/{id}/invitations/{invitation_id}` | admin |
+
+**Documents** — `/api/v1/organizations/{id}/documents`
+
+| Method | Path | Min role |
+| --- | --- | --- |
+| `POST` | `/upload` | researcher |
+| `GET` | `` · `/{document_id}` · `/{document_id}/chunks` | viewer |
+| `GET` | `/{document_id}/retrieve` | viewer |
+| `POST` | `/{document_id}/reprocess` | researcher |
+| `DELETE` | `/{document_id}` | admin |
+
+**Research** — `/api/v1/organizations/{id}/research`
+
+| Method | Path | Min role |
+| --- | --- | --- |
+| `POST` | `` (start a run) | researcher |
+| `GET` | `` · `/{research_id}` | viewer |
+| `GET` | `/quota` | researcher |
+| `POST` | `/{research_id}/cancel` | viewer |
+
+**Reports** — `/api/v1/organizations/{id}/reports`
+
+| Method | Path | Min role |
+| --- | --- | --- |
+| `GET` | `` · `/{report_id}` | viewer |
+| `DELETE` | `/{report_id}` | admin |
+
+**Evaluations** — `/api/v1/organizations/{id}/evaluations`
+
+| Method | Path | Min role |
+| --- | --- | --- |
+| `GET` | `` · `/{run_id}` | viewer |
+| `POST` | `` (score a report) | researcher |
+
+**Health** — `GET /health` and `GET /api/v1/health`, unauthenticated (§11).
+
+Interactive docs: <http://localhost:8000/docs>.
+
+Some privileged mutations are also exposed as Next.js Route Handlers under
+`frontend/app/api/**` (invitation accept/respond, member search) so the
+browser never receives a Supabase service key.
+
+## 14. Current limitations
+
+- **Retrieval is pure vector search.** Hybrid BM25 (`rag/hybrid.py`) and
+  reranking (`rag/reranker.py`) are empty placeholders, as are the agent
+  tools in `app/tools/` (web search, calculator, database) and the MCP
+  server. `rank-bm25` and `fastmcp` are declared in `requirements.txt` but
+  not yet imported anywhere.
+- **Evaluation is heuristic, not model-graded.** `groundedness` counts
+  sentences carrying a citation; `relevance` averages retrieval scores of
+  cited sources. There is no LLM-as-judge step.
+- **No conversational follow-up.** `api/conversations.py` is a placeholder;
+  each research run is independent.
+- Health checks report `Not configured` / `down` until real credentials are
   supplied — there is no bundled local Supabase/Qdrant/Langfuse.
-- Backend API routers for auth/organizations/documents/research/reports/
-  evaluations are registered placeholders (no endpoints yet, by design).
-- Dockerfiles and compose are validated as configuration; image builds
-  require Docker with network access to registries.
-- Qdrant collection creation, Redis cache keys and Langfuse tracing
-  call-sites arrive with their consuming features in later phases.
-
-## 15. Next phase (Phase 2 — expected scope)
-
-Multi-tenant foundation: organization CRUD, membership/roles, Supabase RLS
-aligned endpoints (`/api/v1/organizations`, `/api/v1/auth`), document upload
-to Supabase Storage with metadata persistence in PostgreSQL, and backend
-test coverage for those flows. Phase 2 should not start until explicitly
-instructed.
+- Five backend tests covering document parsing and ingestion limits require
+  optional parser dependencies and fail without them.
 
 ---
 
-*Phase 1 — Project Foundation and Infrastructure.*
+*Grounded, multi-tenant AI research over your organization's own documents.*
