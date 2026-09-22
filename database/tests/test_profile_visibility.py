@@ -174,3 +174,63 @@ def test_a_user_with_no_organization_still_sees_their_own_profile(rls, db):
         "loner@example.com",
     )
     assert [row[0] for row in rows] == ["Lo Ner"]
+
+
+# ----------------------------------------------------------------------
+# The PostgREST embed relationship (migration 018)
+# ----------------------------------------------------------------------
+
+
+def test_members_have_a_foreign_key_to_profiles(db):
+    """The roster embed `profiles(...)` is resolved by PostgREST through a
+    foreign key. `organization_members.user_id` only referenced
+    `auth.users`, so the embed failed with PGRST200 and the whole query
+    errored — the UI showed "No members yet" even to the owner."""
+    rows = db.fetchall(
+        """
+        select con.conname
+        from pg_constraint con
+        join pg_class src on src.oid = con.conrelid
+        join pg_class tgt on tgt.oid = con.confrelid
+        join pg_namespace tns on tns.oid = tgt.relnamespace
+        where con.contype = 'f'
+          and src.relname = 'organization_members'
+          and tgt.relname = 'profiles'
+          and tns.nspname = 'public'
+        """
+    )
+    assert rows, (
+        "organization_members needs a FK to public.profiles or PostgREST "
+        "cannot embed the member's profile"
+    )
+
+
+def test_every_auth_user_has_a_profile_row(db):
+    """The FK above only holds if a profile exists for every user; the
+    `on_auth_user_created` trigger plus the 018 backfill guarantee it."""
+    user_id = make_user(db, "fresh@example.com", "Fresh User")
+
+    assert db.fetchone(
+        "select full_name from public.profiles where id = %s", (user_id,)
+    )[0] == "Fresh User"
+
+
+def test_roster_embed_returns_all_members(rls, team):
+    """The LEFT join the embed compiles to must list everyone."""
+    rows = rls(
+        team["owner"],
+        """
+        select om.user_id, om.role, p.full_name
+        from public.organization_members om
+        left join public.profiles p on p.id = om.user_id
+        where om.organization_id = %s
+        order by om.created_at
+        """,
+        (team["id"],),
+        "owner@example.com",
+    )
+
+    assert [(row[1], row[2]) for row in rows] == [
+        ("owner", "Ada Owner"),
+        ("researcher", "Dana New"),
+    ]

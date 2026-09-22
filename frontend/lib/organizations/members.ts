@@ -57,16 +57,29 @@ export async function listOrganizationMembers(
 ): Promise<OrganizationMember[]> {
   const supabase = await createClient();
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("organization_members")
-    // `!left` forces a LEFT join: a member whose profile row is missing
-    // (or unreadable) still appears, with a null profile, instead of
-    // being silently dropped from the roster.
+    // Resolvable only because migration 018 adds the foreign key
+    // `organization_members.user_id -> profiles.id`. Without it PostgREST
+    // has no relationship to follow and fails the whole request with
+    // PGRST200 (which previously surfaced as an empty roster). `!left`
+    // keeps a member listed even when their profile row is unreadable.
     .select(
       "id, user_id, role, created_at, profiles!left ( id, full_name, avatar_url )",
     )
     .eq("organization_id", organizationId)
     .order("created_at", { ascending: true });
+
+  // A failed embed used to be indistinguishable from "no members": the
+  // roster silently rendered empty. Log loudly so it cannot hide again.
+  if (error) {
+    console.error(
+      "[members] Failed to load the roster for organization %s: %s",
+      organizationId,
+      error.message,
+    );
+    throw new Error(`Could not load members: ${error.message}`);
+  }
 
   return (data ?? []).map((row) => {
     const profile = asObject(

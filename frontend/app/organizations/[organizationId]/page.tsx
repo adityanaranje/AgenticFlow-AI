@@ -80,7 +80,8 @@ export default async function OrganizationPage({
       .eq("organization_id", organization.id),
     supabase
       .from("organization_members")
-      // `!left` keeps members without a readable profile in the list.
+      // Needs the FK from migration 018 to resolve; `!left` keeps a
+      // member listed even without a readable profile row.
       .select(
         "user_id, role, profiles!left ( id, full_name )",
       )

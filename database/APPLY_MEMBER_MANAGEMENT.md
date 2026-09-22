@@ -8,8 +8,9 @@ join-request features:
 | `database/migrations/015_member_management.sql` | The `organization_members_guard` trigger, the `organization_invitations` table + RLS, `leave_organization`, `accept_invitation`, `invitation_preview` |
 | `database/migrations/016_invitation_requests.sql` | `declined` status, `my_pending_invitations`, `respond_to_invitation`, `search_invitable_users`, `resolve_invitable_email`, and a hardened guard trigger |
 | `database/migrations/017_member_profiles_visibility.sql` | Lets members see each other's profiles — **required**, or the members list renders empty |
+| `database/migrations/018_member_profile_relationship.sql` | Adds the `organization_members -> profiles` foreign key PostgREST needs to embed profiles — **required**, or the members list renders empty |
 
-**Run 015, then 016, then 017.** All three are wrapped in a transaction and are
+**Run 015, 016, 017, then 018.** All four are wrapped in a transaction and are
 idempotent — re-running them is safe.
 
 If this is a brand-new database, apply `001` … `014` first, in filename
@@ -24,11 +25,19 @@ order, as described in the README.
    and click **Run**. Wait for "Success".
 3. Repeat with `database/migrations/016_invitation_requests.sql`.
 4. Repeat with `database/migrations/017_member_profiles_visibility.sql`.
+5. Repeat with `database/migrations/018_member_profile_relationship.sql`.
 
-> **If you already ran 015 and 016**, you only need 017. Without it the
-> members roster shows nobody but yourself: `profiles` RLS exposed only
-> your own row, so the `organization_members -> profiles` join dropped
-> everyone else.
+> **Members list showing "No members yet"?** You need **both** 017 and
+> 018 — they fix two separate causes of the same symptom:
+>
+> * **018** adds the foreign key `organization_members.user_id ->
+>   profiles.id`. PostgREST resolves the embedded `profiles(...)` through
+>   a foreign key, and there was none (only one to `auth.users`), so the
+>   request failed outright and the roster looked empty *even to the
+>   owner*.
+> * **017** relaxes `profiles` RLS, which previously exposed only your
+>   own row — so once the embed worked, every *other* member still
+>   dropped out.
 
 ## Option B — `psql`
 
@@ -47,6 +56,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f database/migrations/017_member_profiles_visibility.sql
+
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f database/migrations/018_member_profile_relationship.sql
 ```
 
 `ON_ERROR_STOP=1` matters: without it `psql` would keep going after a
@@ -100,14 +112,24 @@ where polrelid = 'public.profiles'::regclass
 order by polname;
 -- expect profiles_select_co_member among them
 
--- 5. The invariant really holds (this MUST fail):
+-- 5. PostgREST can embed a member's profile (fixes the empty roster).
+select con.conname
+from pg_constraint con
+join pg_class src on src.oid = con.conrelid
+join pg_class tgt on tgt.oid = con.confrelid
+where con.contype = 'f'
+  and src.relname = 'organization_members'
+  and tgt.relname = 'profiles';
+-- expect organization_members_user_id_profile_fkey
+
+-- 6. The invariant really holds (this MUST fail):
 update public.organization_members
 set role = 'admin'
 where role = 'owner';
 -- expect ERROR: An organization must always have at least one owner.
 ```
 
-Step 5 is the important one — it proves the guard trigger is live.
+Step 6 is the important one — it proves the guard trigger is live.
 
 ---
 

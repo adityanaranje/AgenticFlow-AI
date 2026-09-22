@@ -121,6 +121,7 @@ MIGRATION_ORDER = [
     "015_member_management.sql",
     "016_invitation_requests.sql",
     "017_member_profiles_visibility.sql",
+    "018_member_profile_relationship.sql",
 ]
 
 
