@@ -70,6 +70,7 @@ const PUBLIC_ENV: Record<string, string | undefined> = {
   NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
   NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  NEXT_PUBLIC_GOOGLE_CLIENT_ID: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
 };
 
 function readEnv(name: string): string {
@@ -163,3 +164,62 @@ export function getSupabasePublicEnv(): SupabasePublicEnv | null {
  * around without the other is how mismatched project/key pairs get built.
  * Use `requireSupabaseEnv()` (client) or `getSupabasePublicEnv()` (server).
  */
+
+/* ------------------------------------------------------------------ *
+ * Google Identity Services (optional)
+ * ------------------------------------------------------------------ */
+
+export interface GoogleIdentityStatus {
+  /** True when a usable Web client ID is configured. */
+  enabled: boolean;
+  /** The cleaned `<digits>-<hash>.apps.googleusercontent.com` value. */
+  clientId: string;
+  /** Why it is off, when a value was supplied but cannot be used. */
+  issue: string | null;
+}
+
+/** Shape Google hands out for Web application clients. */
+const GOOGLE_CLIENT_ID_RE = /^[\w-]+\.apps\.googleusercontent\.com$/;
+
+/**
+ * Should the Google button use Google Identity Services (an ID token minted
+ * in the page) instead of the Supabase redirect flow?
+ *
+ * WHY THIS EXISTS — consent-screen branding.
+ * `signInWithOAuth()` sends the browser to
+ * `https://<project-ref>.supabase.co/auth/v1/authorize`, so Google's account
+ * chooser names that host: "to continue to <project-ref>.supabase.co". The
+ * host is Supabase's, not ours, and on the Free plan it cannot be renamed
+ * (the Custom Domains add-on is a paid feature).
+ *
+ * With Google Identity Services the consent UI is rendered by Google *on our
+ * own page*, keyed to the client ID's Authorized JavaScript origin — so it
+ * names our domain. The resulting ID token is handed to Supabase through
+ * `signInWithIdToken()`; the browser never visits the Supabase host, so
+ * `*.supabase.co` never appears to the user.
+ *
+ * Opt-in: without NEXT_PUBLIC_GOOGLE_CLIENT_ID the redirect flow is kept
+ * exactly as it was.
+ */
+export function getGoogleIdentityStatus(): GoogleIdentityStatus {
+  const raw = readEnv("NEXT_PUBLIC_GOOGLE_CLIENT_ID");
+  const clientId = cleanEnvValue(raw);
+
+  if (!clientId) {
+    return { enabled: false, clientId: "", issue: null };
+  }
+
+  if (!GOOGLE_CLIENT_ID_RE.test(clientId)) {
+    return {
+      enabled: false,
+      clientId: "",
+      issue:
+        `NEXT_PUBLIC_GOOGLE_CLIENT_ID ("${clientId.slice(0, 48)}") is not a Google Web ` +
+        `client ID. Copy the full value from Google Cloud -> Auth Platform -> Clients; ` +
+        `it ends in ".apps.googleusercontent.com". Falling back to the Supabase ` +
+        `redirect flow, which shows the project URL on Google's consent screen.`,
+    };
+  }
+
+  return { enabled: true, clientId, issue: null };
+}

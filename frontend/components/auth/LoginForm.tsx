@@ -71,7 +71,7 @@ export default function LoginForm({
     <div className="space-y-6">
       {!configured && <AuthConfigNotice />}
 
-      <GoogleButton />
+      <GoogleButton redirectTo={safeRedirect(redirect)} />
 
       {configured && <OAuthSetupPanel plan={oauthPlan} />}
 

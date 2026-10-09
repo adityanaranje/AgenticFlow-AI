@@ -23,6 +23,8 @@ cp .env.example .env.local     # .env works too; only this folder is read
 #       NEXT_PUBLIC_SUPABASE_ANON_KEY (Supabase dashboard -> Project
 #       Settings -> API Keys; the *publishable* key is the browser-safe one)
 #    -> NEXT_PUBLIC_API_URL (defaults to http://localhost:8000)
+#    -> NEXT_PUBLIC_GOOGLE_CLIENT_ID (optional; makes Google's consent
+#       screen name your domain instead of <project-ref>.supabase.co)
 
 # 2. Install, check the values, and run
 npm install
@@ -87,12 +89,27 @@ public/         # Static assets
 ## Authentication
 
 Supabase Auth handles sign-in with email + password **and Google OAuth**
-(Sign in with Google on `/login` and `/signup`). `GoogleButton` calls
-`signInWithOAuth` with `redirectTo = <origin>/auth/callback`; the app's
-`/auth/callback` route then does the PKCE code exchange, so the session
-lands in cookies written by `@supabase/ssr`.
+(Sign in with Google on `/login` and `/signup`).
 
-Two redirect lists, and they are not interchangeable:
+`GoogleButton` picks one of two flows, and the choice decides what Google's
+account chooser prints above the account list:
+
+| `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Component | Consent screen says |
+| ------------------------------ | --------- | ------------------- |
+| unset (default) | `GoogleRedirectButton` — `signInWithOAuth` + `/auth/callback` PKCE exchange | “to continue to `<project-ref>.supabase.co`” |
+| set | `GoogleIdentityButton` — Google Identity Services + `signInWithIdToken` | “to continue to `<your domain>`” |
+
+The Identity Services flow renders Google's own prompt in the page, so the
+browser never visits the Supabase host; the token is exchanged client-side and
+`@supabase/ssr` writes the session cookies. It needs the app's origin in the
+Google client's *Authorized JavaScript origins* and the client ID in Supabase →
+Authentication → Sign In / Providers → Google → *Client IDs*. If the Google
+script cannot load it falls back to `GoogleRedirectButton` automatically.
+Full write-up (including the free consent-screen branding route and the paid
+custom-domain one): “Google consent screen: showing your own domain” in the
+root README.
+
+The redirect flow has two redirect lists, and they are not interchangeable:
 
 - **Google Cloud → Clients → Authorized redirect URIs** takes *Supabase's*
   callback — `https://<project-ref>.supabase.co/auth/callback` (the value is

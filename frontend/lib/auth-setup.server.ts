@@ -5,7 +5,7 @@ import {
   buildOAuthRedirectPlan,
   type OAuthRedirectPlan,
 } from "@/lib/auth-setup";
-import { getSupabaseEnvStatus } from "@/lib/env";
+import { getGoogleIdentityStatus, getSupabaseEnvStatus } from "@/lib/env";
 
 /**
  * Server-side entry point for the OAuth setup checklist.
@@ -33,5 +33,7 @@ export async function getOAuthRedirectPlan(): Promise<OAuthRedirectPlan | null> 
     origin: requestHeaders.get("origin"),
   });
 
-  return origin ? buildOAuthRedirectPlan(env.url, origin) : null;
+  const { clientId } = getGoogleIdentityStatus();
+
+  return origin ? buildOAuthRedirectPlan(env.url, origin, clientId) : null;
 }

@@ -107,7 +107,7 @@ export default function SignupForm({
     <div className="space-y-6">
       {!configured && <AuthConfigNotice />}
 
-      <GoogleButton label="Sign up with Google" />
+      <GoogleButton label="Sign up with Google" intent="signup" />
 
       {configured && <OAuthSetupPanel plan={oauthPlan} />}
 

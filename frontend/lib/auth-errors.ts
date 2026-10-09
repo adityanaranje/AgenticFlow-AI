@@ -96,3 +96,51 @@ export function describeOAuthError(message: string | null): string | null {
 
   return message;
 }
+
+/**
+ * Map an AuthApiError returned by `signInWithIdToken` (Google Identity
+ * Services flow — see components/auth/GoogleIdentityButton.tsx).
+ *
+ * These failures are configuration mismatches between the Google client ID
+ * baked into the page and the one Supabase is willing to accept, and the raw
+ * messages ("Unacceptable audience in id_token") name neither side.
+ */
+export function describeIdTokenError(message: string | null): string | null {
+  if (!message) return null;
+
+  if (/audience|aud claim|unacceptable audience/i.test(message)) {
+    return (
+      "Supabase rejected the Google token because it was issued for a " +
+      "different client. Paste the value of NEXT_PUBLIC_GOOGLE_CLIENT_ID into " +
+      "Supabase \u2192 Authentication \u2192 Sign In / Providers \u2192 Google " +
+      "\u2192 \u201cClient IDs\u201d (a comma-separated list \u2014 the web " +
+      "client must be first), then retry."
+    );
+  }
+
+  if (/nonce/i.test(message)) {
+    return (
+      "The sign-in nonce did not match. This usually means the page was " +
+      "served over plain http from a non-localhost host, so the browser " +
+      "disabled crypto.subtle. Serve the app over https and try again."
+    );
+  }
+
+  if (/provider.*not.*(enabled|supported)|is not enabled/i.test(message)) {
+    return (
+      "Google sign-in isn\u2019t enabled for this Supabase project yet. " +
+      "Enable the Google provider in Supabase \u2192 Authentication \u2192 " +
+      "Sign In / Providers and add the web client ID to it."
+    );
+  }
+
+  if (/signups? not allowed|signup is disabled/i.test(message)) {
+    return (
+      "This Supabase project has new signups disabled, so the Google account " +
+      "could not be registered. Enable signups in Supabase \u2192 " +
+      "Authentication \u2192 Sign In / Providers."
+    );
+  }
+
+  return message;
+}

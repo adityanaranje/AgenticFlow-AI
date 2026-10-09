@@ -42,6 +42,13 @@ export interface OAuthRedirectPlan {
   supabaseRedirectUrls: string[];
   /** The value this app currently sends as `redirect_to`. */
   redirectTo: string;
+  /**
+   * `NEXT_PUBLIC_GOOGLE_CLIENT_ID` when the Google Identity Services flow is
+   * active, else `null`. When set, Google's consent screen names
+   * `appOrigin` instead of `supabaseOrigin` — but Supabase has to be told to
+   * accept tokens minted for this client ID.
+   */
+  googleIdentityClientId: string | null;
 }
 
 /**
@@ -87,6 +94,7 @@ function originOf(url: string): string | null {
 export function buildOAuthRedirectPlan(
   supabaseUrl: string,
   appOrigin?: string,
+  googleIdentityClientId?: string | null,
 ): OAuthRedirectPlan | null {
   const supabaseOrigin = originOf(supabaseUrl);
 
@@ -123,6 +131,7 @@ export function buildOAuthRedirectPlan(
     supabaseSiteUrl: origin,
     supabaseRedirectUrls: [redirectTo, `${origin}/**`],
     redirectTo,
+    googleIdentityClientId: googleIdentityClientId || null,
   };
 }
 

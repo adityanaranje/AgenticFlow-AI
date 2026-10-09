@@ -38,6 +38,7 @@ const REPO_ROOT = resolve(FRONTEND_DIR, "..");
 const URL_VAR = "NEXT_PUBLIC_SUPABASE_URL";
 const KEY_VARS = ["NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY"];
 const API_URL_VAR = "NEXT_PUBLIC_API_URL";
+const GOOGLE_CLIENT_ID_VAR = "NEXT_PUBLIC_GOOGLE_CLIENT_ID";
 
 const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((a) => a.startsWith("--")).map((a) => a.split("=")[0]));
@@ -651,6 +652,59 @@ function printSection(title, items, marker, colorFn) {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Report which Google flow the browser bundle will use, and therefore what
+ * Google's consent screen is going to say above the account list.
+ *
+ * Unset  -> signInWithOAuth(): the browser hops through
+ *           <project-ref>.supabase.co, so Google names that host.
+ * Set    -> Google Identity Services: Google renders the prompt in our page
+ *           and names our own Authorized JavaScript origin.
+ */
+function checkGoogleIdentity(files, urlInfo) {
+  const found = resolveEffectiveValue(GOOGLE_CLIENT_ID_VAR, files);
+
+  const raw = found?.value ?? process.env[GOOGLE_CLIENT_ID_VAR] ?? "";
+  const value = String(raw).trim().replace(/^(['"`])([\s\S]*)\1$/, "$2").trim();
+
+  const appOrigin = (APP_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+  const projectHost = urlInfo ? new URL(urlInfo.url).host : "<project-ref>.supabase.co";
+
+  if (!value) {
+    info(
+      `${GOOGLE_CLIENT_ID_VAR} not set — Google will say “to continue to ${projectHost}”`,
+      "That is the Supabase redirect flow (signInWithOAuth). It works, but the consent",
+      "screen names the Supabase project host instead of your domain.",
+      "",
+      `To show your own domain for free, set ${GOOGLE_CLIENT_ID_VAR} to your Google Cloud`,
+      "Web client ID; the button then uses Google Identity Services. See the README",
+      "section “Google consent screen: showing your own domain”.",
+    );
+    return;
+  }
+
+  if (!/^[\w-]+\.apps\.googleusercontent\.com$/.test(value)) {
+    warn(
+      `${GOOGLE_CLIENT_ID_VAR} is not a Google Web client ID`,
+      `value: ${value.slice(0, 60)}`,
+      'It must end in ".apps.googleusercontent.com" (Google Cloud → Auth Platform →',
+      "Clients → your Web application client). The app ignores it and falls back to",
+      "the Supabase redirect flow, so the consent screen keeps showing",
+      `${projectHost}.`,
+    );
+    return;
+  }
+
+  info(
+    `${GOOGLE_CLIENT_ID_VAR} set — Google will say “to continue to ${new URL(appOrigin).host}”`,
+    "Google Identity Services flow: the browser never visits the Supabase host.",
+    "",
+    "Both consoles must agree, or sign-in fails at the last step:",
+    `  Google Cloud → Auth Platform → Clients → Web client → Authorized JavaScript origins: ${appOrigin}`,
+    `  Supabase → Authentication → Sign In / Providers → Google → “Client IDs”: ${value}`,
+  );
+}
+
 async function main() {
   console.log(`\n${C.bold("AgentFlow AI — frontend environment doctor")}`);
   console.log(C.dim(`mode: ${MODE} · project dir: ${FRONTEND_DIR}\n`));
@@ -715,6 +769,7 @@ async function main() {
   checkKeyMatchesProject(urlInfo, key);
   await liveCheck(urlInfo, key);
   await checkGoogleProvider(urlInfo);
+  checkGoogleIdentity(files, urlInfo);
 
   const apiUrl = resolveValue(API_URL_VAR, files);
   if (!apiUrl) {

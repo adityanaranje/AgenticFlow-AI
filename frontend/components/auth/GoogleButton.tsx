@@ -1,102 +1,52 @@
 "use client";
 
-import { useState } from "react";
-import { CircleAlert, Loader2 } from "lucide-react";
-
-import GoogleIcon from "@/components/auth/GoogleIcon";
-import { describeAuthError, describeOAuthError } from "@/lib/auth-errors";
-import { getSupabaseEnvStatus } from "@/lib/env";
-import { createClient } from "@/lib/supabase/client";
+import GoogleIdentityButton from "@/components/auth/GoogleIdentityButton";
+import GoogleRedirectButton from "@/components/auth/GoogleRedirectButton";
+import { getGoogleIdentityStatus } from "@/lib/env";
 
 /**
- * "Continue with Google" button (Supabase OAuth).
+ * Google sign-in button — picks the flow the project is configured for.
  *
- * On success supabase-js redirects the browser to Google and, after
- * consent, back to `/auth/callback` where the PKCE code is exchanged
- * (the code verifier is persisted in cookies by createBrowserClient).
+ * Two flows exist because of what Google's account chooser prints above the
+ * account list:
  *
- * Failures are inspected and explained precisely (missing env config,
- * blocked cookies, unreachable Supabase, provider disabled) instead of
- * showing a generic message. The technical error is always logged to
- * the console as well.
+ *   NEXT_PUBLIC_GOOGLE_CLIENT_ID set  -> Google Identity Services.
+ *       Google renders its prompt on this page, keyed to the client ID's
+ *       Authorized JavaScript origin, so it reads "to continue to
+ *       <your domain>". The ID token is passed to signInWithIdToken().
+ *
+ *   not set (default)                 -> Supabase redirect flow.
+ *       signInWithOAuth() sends the browser through
+ *       <project-ref>.supabase.co/auth/v1/authorize, so Google names that
+ *       host: "to continue to <project-ref>.supabase.co".
+ *
+ * The identity button degrades to the redirect button by itself when the
+ * Google script cannot load, so this choice is never a single point of
+ * failure. See the README section "Google consent screen: showing your own
+ * domain".
  */
-export default function GoogleButton({ label }: { label?: string }) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export default function GoogleButton({
+  label,
+  intent = "signin",
+  redirectTo = "/dashboard",
+}: {
+  label?: string;
+  /** Changes Google's own button wording ("Sign up with" vs "Continue with"). */
+  intent?: "signin" | "signup";
+  /** Internal path to land on after a successful ID-token sign-in. */
+  redirectTo?: string;
+}) {
+  const { enabled, issue } = getGoogleIdentityStatus();
 
-  /*
-   * When the public Supabase env is unusable the button is inert on
-   * purpose: AuthConfigNotice already says what to fix, and a click
-   * would only throw.
-   */
-  const { configured } = getSupabaseEnvStatus();
-
-  async function handleGoogleSignIn() {
-    if (!configured) return;
-
-    setError(null);
-    setLoading(true);
-
-    try {
-      const supabase = createClient();
-
-      const redirectTo = `${window.location.origin}/auth/callback`;
-
-      const { error: signInError } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo,
-        },
-      });
-
-      if (signInError) {
-        // Provider disabled, invalid project, etc. — returned, not thrown.
-        console.error("Google sign-in error:", signInError);
-        setError(describeOAuthError(signInError.message) ?? signInError.message);
-        setLoading(false);
-        return;
-      }
-
-      // On success the browser is navigated to Google — nothing to do.
-    } catch (err) {
-      // Thrown failures: missing env config, blocked cookie writes,
-      // network errors to Supabase, ...
-      console.error("Google sign-in failed:", err);
-      setError(describeAuthError(err));
-      setLoading(false);
-    }
+  if (issue && typeof window !== "undefined") {
+    console.warn(`[auth] ${issue}`);
   }
 
-  return (
-    <div className="w-full">
-      <button
-        type="button"
-        onClick={handleGoogleSignIn}
-        disabled={loading || !configured}
-        title={
-          configured
-            ? undefined
-            : "Unavailable until NEXT_PUBLIC_SUPABASE_URL and the publishable/anon key are set and the dev server is restarted"
-        }
-        className="btn-secondary w-full"
-      >
-        {loading ? (
-          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-        ) : (
-          <GoogleIcon size={18} />
-        )}
-        {loading ? "Redirecting to Google…" : (label ?? "Continue with Google")}
-      </button>
+  if (enabled) {
+    return (
+      <GoogleIdentityButton label={label} intent={intent} redirectTo={redirectTo} />
+    );
+  }
 
-      {error && (
-        <p
-          role="alert"
-          className="mt-2 flex items-start gap-1.5 text-left text-xs leading-relaxed text-rose-600 dark:text-rose-400"
-        >
-          <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          <span>{error}</span>
-        </p>
-      )}
-    </div>
-  );
+  return <GoogleRedirectButton label={label} />;
 }

@@ -235,6 +235,7 @@ npm install
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | frontend |   ✅    | Publishable key (`sb_publishable_...`) - preferred |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY`   | frontend   |    ✅    | Legacy anon key; used when the publishable one is unset |
 | `NEXT_PUBLIC_API_URL`             | frontend   |          | Backend base URL (default `http://localhost:8000`) |
+| `NEXT_PUBLIC_GOOGLE_CLIENT_ID`    | frontend   |          | Google **Web** client ID. Set it and Google sign-in uses Identity Services, so the consent screen names your domain instead of `<project-ref>.supabase.co` — see [Google consent screen](#google-consent-screen-showing-your-own-domain). Public by design; the client *secret* stays in Supabase |
 
 **Security rules (enforced by design):** secrets are never hard-coded; the
 service-role key, Langfuse secret and Qdrant key exist only server-side and
@@ -350,7 +351,7 @@ your **Supabase project**, never to `localhost:3000`:
 | Supabase → Authentication → URL Configuration → *Redirect URLs* | `http://localhost:3000/auth/callback` (or `http://localhost:3000/**` in dev) plus the deployed equivalent |
 | Supabase → Authentication → Sign In / Providers → Google | Client ID + Client Secret, provider enabled; scopes `openid`, `email`, `profile` |
 
-`components/auth/GoogleButton.tsx` sends `redirectTo = <app origin>/auth/callback`
+`components/auth/GoogleRedirectButton.tsx` sends `redirectTo = <app origin>/auth/callback`
 (PKCE) and `app/auth/callback/route.ts` exchanges the code — both must stay in
 Supabase's *Redirect URLs* list, never in Google's.
 
@@ -371,6 +372,93 @@ client's *Audience* set so your account can sign in (an unverified app in
 (`localhost` vs `127.0.0.1` are different origins — register both). Running a
 local `supabase start` stack instead of the hosted one? Register
 `http://127.0.0.1:54321/auth/v1/callback` with Google.
+
+### Google consent screen: showing your own domain
+
+By default Google's account chooser says **“to continue to
+`<project-ref>.supabase.co`”** during sign-up. That is not something this
+repository hardcodes: `signInWithOAuth()` sends the browser to
+`https://<project-ref>.supabase.co/auth/v1/authorize`, and Google always names
+the host that asked for consent.
+
+Three ways to change it, cheapest first. They stack — 1 and 2 are the useful
+free combination.
+
+#### Option 1 — Google Identity Services (free, implemented here)
+
+Set one variable and the Google button stops using the redirect flow:
+
+```bash
+# frontend/.env.local
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=1234567890-abcdefghijklmnop.apps.googleusercontent.com
+```
+
+Google then renders its own prompt **inside this app's page** (Google Identity
+Services), keyed to the client ID's *Authorized JavaScript origins* — so it
+names your domain — and hands back an ID token that
+`components/auth/GoogleIdentityButton.tsx` exchanges with
+`supabase.auth.signInWithIdToken()`. The browser never visits
+`*.supabase.co`, so the project host appears nowhere: not on the consent
+screen, not in the address bar.
+
+Two console settings have to match the variable:
+
+| Where | Value |
+| ----- | ----- |
+| Google Cloud → Auth Platform → Clients → your **Web** client → *Authorized JavaScript origins* | `http://localhost:3000` + every deployed/preview origin |
+| Supabase → Authentication → Sign In / Providers → Google → *Client IDs* | the same `...apps.googleusercontent.com` value (web client first if you list several) |
+
+Caveats worth knowing before you commit to it:
+
+- It covers Google only; other providers keep using the redirect flow.
+- It needs a secure context for the nonce (`https`, or `localhost`).
+- If the Google script is blocked (content blockers, offline, old browsers)
+  the component silently falls back to `GoogleRedirectButton`, so sign-in
+  still works — only the wording regresses. Keep the redirect-flow rows in the
+  table above configured for that reason.
+- Leave the variable unset and nothing changes: the redirect flow is the
+  default.
+
+Verify with `cd frontend && npm run doctor` — it prints which flow the bundle
+will use and the exact sentence Google is going to show.
+
+#### Option 2 — Brand the consent screen (free, Google-side only)
+
+Independent of the flow, and worth doing either way: a verified brand replaces
+the host with your **app name and logo**.
+
+1. Verify your domain in [Google Search Console](https://search.google.com/search-console)
+   (TXT record) using the same Google account.
+2. Google Cloud → Auth Platform → **Branding**: app name, logo, home page,
+   privacy policy, terms of service.
+3. *Authorized domains*: add your own domain. `<project-ref>.supabase.co` may
+   also be listed — you cannot verify a domain you do not own, so if Google
+   asks, reply that it belongs to a third-party auth provider (Supabase).
+4. Keep scopes to `openid`, `.../auth/userinfo.email`,
+   `.../auth/userinfo.profile`. Sensitive scopes trigger a much longer review.
+5. Publishing status → **Publish app**, then request verification.
+
+Approval is manual and takes days, not minutes. Until it lands, users may see
+an “unverified app” interstitial.
+
+#### Option 3 — Supabase Custom Domains (paid)
+
+Supabase's Custom Domains add-on (Pro plan and above) serves auth from
+`auth.yourdomain.com`, which removes `*.supabase.co` from every surface at
+once — consent screen, address bar, and confirmation-email links.
+
+After the CNAME is verified: point `NEXT_PUBLIC_SUPABASE_URL` at the custom
+domain everywhere (local, Vercel, Render, `docker-compose`), update the Google
+client's *Authorized redirect URIs* to
+`https://auth.yourdomain.com/auth/v1/callback`, and rebuild the frontend —
+`NEXT_PUBLIC_*` values are inlined at build time.
+
+#### What none of these change
+
+Confirmation and password-reset **emails** still link through the auth host
+and are sent from Supabase's shared sender until you configure custom SMTP
+(Supabase → Project Settings → Authentication → SMTP Settings). Option 3 fixes
+the link host; custom SMTP fixes the sender.
 
 ```bash
 cd frontend && npm run doctor
