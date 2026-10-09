@@ -90,7 +90,17 @@ if (supabaseProblems.length > 0) {
 const nextConfig: NextConfig = {
   // Standalone output lets the Docker image run `node server.js`
   // without shipping node_modules (see frontend/Dockerfile).
-  output: "standalone",
+  //
+  // NOT on Vercel: Next.js 16.3 + Turbopack does not emit
+  // `.next/next-server.js.nft.json`, which Vercel's post-build file
+  // tracing (onBuildComplete) requires, so `output: "standalone"`
+  // fails the Vercel build with:
+  //   ENOENT: ... open '.../.next/next-server.js.nft.json'
+  // (vercel/next.js#96646). Vercel serves Next.js natively and never
+  // needs the standalone bundle, so it is enabled only for non-Vercel
+  // builds (Docker, bare metal). The VERCEL env var is set by Vercel
+  // during `vercel build`, which is when this config file is evaluated.
+  ...(process.env.VERCEL ? {} : { output: "standalone" }),
 };
 
 export default nextConfig;

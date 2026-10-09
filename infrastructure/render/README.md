@@ -220,6 +220,7 @@ move the workers to a paid instance and restore the compose values.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
+| Vercel build fails at `onBuildComplete`: `ENOENT … next-server.js.nft.json` | Next 16.3 + Turbopack doesn't emit that file, but Vercel's tracing expects it when `output: "standalone"` is set | Already fixed: `next.config.ts` now sets standalone only when `VERCEL` is unset (Docker keeps it) — redeploy |
 | Render deploy fails with a port error | Server bound to the wrong port | The start script binds `${PORT:-8000}`; keep `dockerCommand` as shipped |
 | `Killed` / exit 137 in logs | OOM on the 512 MB instance | Lower `EMBEDDING_BATCH_SIZE`/concurrency (Part 5) |
 | Browser: CORS error | `FRONTEND_URL` ≠ exact Vercel origin | Fix scheme/host/trailing slash; preview deploys need the same origin |
