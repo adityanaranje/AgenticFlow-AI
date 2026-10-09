@@ -1,0 +1,72 @@
+# ============================================================
+# AgentFlow AI - keep the Render free service warm  (TEMPLATE)
+#
+# This file is a TEMPLATE: GitHub only runs workflows that live in
+# .github/workflows/, and this repository's automation token cannot
+# create files there, so copy it into place yourself (one command):
+#
+#   mkdir -p .github/workflows
+#   cp infrastructure/render/keepalive.github-actions.yml .github/workflows/render-keepalive.yml
+#   git add .github/workflows/render-keepalive.yml && git commit && git push
+#
+# (Or skip GitHub entirely and use any free external pinger such as
+# cron-job.org on the same URL and cadence - see README.md.)
+#
+# What it does:
+# Render free web services spin down after 15 minutes without
+# inbound traffic (~1 minute cold start on the next request).
+# While the service is asleep the queue workers are asleep too,
+# so uploaded documents stay "pending" and research runs never
+# start. Pinging the service every 10 minutes keeps the API and
+# both workers running continuously.
+#
+# Setup (one time):
+#   GitHub repo -> Settings -> Secrets and variables -> Actions
+#   -> New repository secret:
+#       RENDER_SERVICE_URL = https://<your-service>.onrender.com
+#   (no trailing slash, no path)
+#
+# Notes:
+#   - Cron is UTC. GitHub may delay scheduled runs by a few minutes
+#     under load; the 15-minute idle window leaves plenty of slack.
+#   - GitHub disables scheduled workflows in repositories with no
+#     activity for 60 days, and never runs them in forks - commit or
+#     use the "Run workflow" button to re-enable.
+#   - An always-warm service consumes ~730 of the 750 free instance
+#     hours per workspace per month. That fits a single service; do
+#     not add a second free service you also keep warm.
+#   - Prefer an external pinger? cron-job.org (free) hitting the URL
+#     every 10 minutes does the same job without GitHub.
+# ============================================================
+
+name: Keep Render API warm
+
+on:
+  schedule:
+    - cron: "*/10 * * * *" # every 10 minutes, UTC
+  workflow_dispatch: # manual "Run workflow" button
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping the Render service
+        env:
+          RENDER_URL: ${{ secrets.RENDER_SERVICE_URL }}
+        run: |
+          if [ -z "${RENDER_URL}" ]; then
+            echo "::error::Missing repository secret RENDER_SERVICE_URL (e.g. https://agentflow-api.onrender.com)."
+            exit 1
+          fi
+
+          # "/" is the cheapest endpoint: it returns service info without
+          # probing OpenAI/Supabase/Qdrant/Redis/Langfuse. --max-time is
+          # generous because the first request after a spin-down takes ~1 min.
+          code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 "${RENDER_URL}/")"
+          echo "GET ${RENDER_URL}/ -> HTTP ${code}"
+
+          if [ "${code}" != "200" ]; then
+            echo "::error::Unexpected status ${code} - check the Render service logs."
+            exit 1
+          fi

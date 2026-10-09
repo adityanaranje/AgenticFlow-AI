@@ -17,7 +17,7 @@ The repository is named **AgenticFlow-AI**; the application uses **AgentFlow AI*
 - [Repository layout](#2-repository-layout)
 - [Prerequisites](#3-prerequisites) · [Installation](#4-installation)
 - [Configuration](#5-environment-variables) · [Local development](#6-local-development)
-- [Docker](#7-docker-usage) · [Testing](#8-testing)
+- [Docker](#7-docker-usage) · [Free deployment](#7-free-deployment-vercel--render) · [Testing](#8-testing)
 - [Ingestion performance](#9-ingestion-performance) · [Research performance](#10-research-performance)
 - [Health](#11-health-endpoint) · [Database and roles](#12-database-migrations)
 - [Features and user journey](#13-features-and-user-journey)
@@ -429,6 +429,22 @@ credentials.
 Supabase, Qdrant and Langfuse remain external — point the stack at your
 hosted instances through the root `.env` file (see `.env.example`).
 Image build details: `infrastructure/docker/README.md`.
+
+### Free deployment: Vercel + Render
+
+To host the application itself at **$0/month** (external services already
+provisioned), deploy the Next.js frontend to **Vercel** and the FastAPI API
+plus **both queue workers** to a single free **Render** web service. Render's
+free tier has no background-worker service type, so
+`infrastructure/render/start-services.sh` starts the API and both consumers in
+one container, and `render.yaml` is a ready-to-apply blueprint. Free instances
+spin down after 15 minutes idle — and an asleep instance means asleep workers,
+i.e. documents stuck at `pending` — so the runbook also ships a keep-alive
+recipe (`infrastructure/render/keepalive.github-actions.yml`).
+
+Full step-by-step runbook — env var tables, Supabase/Google URL allowlists,
+free-tier tuning, and troubleshooting:
+**[`infrastructure/render/README.md`](infrastructure/render/README.md)**.
 
 ## 8. Testing
 

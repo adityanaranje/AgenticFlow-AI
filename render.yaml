@@ -1,0 +1,112 @@
+# ============================================================
+# AgentFlow AI - Render Blueprint (free tier)
+#
+# Deploys the FastAPI API AND both queue workers (document +
+# research) as ONE free web service, because Render's free tier
+# has no background-worker service type. All three processes are
+# started by infrastructure/render/start-services.sh.
+#
+# The Next.js frontend is NOT deployed here - it goes to Vercel
+# (see infrastructure/render/README.md for the full runbook).
+#
+# How to use:
+#   Render Dashboard -> New -> Blueprint -> pick this repository
+#   -> Render reads this file and prompts for every `sync: false`
+#   secret below. Or deploy manually with the same settings
+#   (dashboard steps are in the runbook).
+# ============================================================
+
+services:
+  - type: web
+    name: agentflow-api
+    runtime: docker
+    plan: free # 512 MB RAM / 0.1 CPU, spins down after 15 min idle
+    region: singapore # closest Render region to India; change if you prefer
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    # Combined API + workers (backend/Dockerfile installs this script).
+    dockerCommand: bash /app/infrastructure/render/start-services.sh
+    # "/" is a cheap, dependency-free liveness probe. The deeper
+    # /health (or /api/v1/health) probes OpenAI/Supabase/Qdrant/
+    # Redis/Langfuse and is meant for humans, not 5-second probes.
+    healthCheckPath: /
+
+    envVars:
+      # --- Application -----------------------------------------------------
+      - key: ENVIRONMENT
+        value: production
+      # The Vercel frontend origin. Used by CORS (allow_origins) -
+      # set it to your exact Vercel domain, no trailing slash.
+      - key: FRONTEND_URL
+        sync: false # e.g. https://agentflow-ai.vercel.app
+
+      # --- OpenAI (backend-only) -------------------------------------------
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+
+      # --- Supabase (backend-only secret key) ------------------------------
+      - key: SUPABASE_URL
+        sync: false # https://<project-ref>.supabase.co
+      # Backend-only: the "secret" key (sb_secret_...). Never expose to
+      # the browser; the frontend uses the publishable/anon key instead.
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+      # --- Qdrant (backend-only key) ----------------------------------------
+      - key: QDRANT_URL
+        sync: false # https://<cluster>.aws.cloud.qdrant.io:6333
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION
+        value: agentflow_documents
+
+      # --- Redis (your existing hosted instance) -----------------------------
+      # Point at the Redis you already set up (rediss://... for TLS hosts
+      # such as Upstash). Do NOT use the compose redis hostname here.
+      - key: REDIS_URL
+        sync: false
+      - key: REDIS_TTL_SECONDS
+        value: "3600"
+
+      # --- Langfuse (backend-only secret) ------------------------------------
+      - key: LANGFUSE_HOST
+        value: https://cloud.langfuse.com
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+
+      # --- Free-tier tuning ---------------------------------------------------
+      # The API + both workers share one 512 MB instance, so run leaner
+      # than the compose defaults. Raise these only after moving to a
+      # paid instance (see "Tuning" in infrastructure/render/README.md).
+      - key: DOCUMENT_WORKER_CONCURRENCY
+        value: "1"
+      - key: RESEARCH_WORKER_CONCURRENCY
+        value: "1"
+      - key: EMBEDDING_BATCH_SIZE
+        value: "32"
+      - key: EMBEDDING_CONCURRENCY
+        value: "2"
+      - key: EMBEDDING_MAX_RETRIES
+        value: "3"
+      - key: CHUNK_INSERT_BATCH_SIZE
+        value: "50"
+      - key: CHUNK_INSERT_CONCURRENCY
+        value: "1"
+      - key: QDRANT_UPSERT_BATCH_SIZE
+        value: "64"
+      - key: QDRANT_UPSERT_CONCURRENCY
+        value: "1"
+      - key: INLINE_PROCESSING_WORKERS
+        value: "1"
+      - key: EVIDENCE_CONCURRENCY
+        value: "2"
+      - key: RETRIEVAL_CONCURRENCY
+        value: "2"
+      - key: REPORT_SOURCE_BATCH_SIZE
+        value: "25"

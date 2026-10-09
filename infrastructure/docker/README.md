@@ -12,6 +12,13 @@ builds them with the repository root as build context.
 | `agentflow-backend`  | `backend/Dockerfile` | Python 3.11-slim + Uvicorn on port 8000   |
 | `agentflow-frontend` | `frontend/Dockerfile`| Next.js standalone server on port 3000    |
 
+The backend image also ships `infrastructure/render/start-services.sh`
+(installed at `/app/infrastructure/render/`), which starts the API together
+with both queue workers in a single container. Compose does not use it (it
+runs the three processes as separate services); it exists for hosts whose
+free tier has no background-worker service type — see
+`../render/README.md`.
+
 External managed services (Supabase, Qdrant, Langfuse) are **not**
 containerized here — they are hosted and referenced by URL.
 

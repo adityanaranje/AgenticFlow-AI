@@ -23,6 +23,11 @@ RUN pip install --upgrade pip && \
 # Application code lives under /app/backend.
 COPY backend ./backend
 
+# Combined start script (API + both workers in one container), used by the
+# free Render deployment - see infrastructure/render/README.md.
+COPY infrastructure/render/start-services.sh /app/infrastructure/render/start-services.sh
+RUN chmod +x /app/infrastructure/render/start-services.sh
+
 ENV PYTHONPATH=/app/backend
 
 EXPOSE 8000
