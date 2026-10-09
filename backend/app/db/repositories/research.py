@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from app.core.text import sanitize_for_postgres
 from app.db.repositories import first_row
 from app.db.supabase import get_supabase
 
@@ -21,15 +22,17 @@ class ResearchRepository:
         client = get_supabase()
         if client is None:
             return None
-        row = {
-            "id": str(uuid.uuid4()),
-            "organization_id": organization_id,
-            "user_id": user_id,
-            "question": question,
-            "status": "queued",
-            "config": config or {},
-            "graph_state": {},
-        }
+        row = sanitize_for_postgres(
+            {
+                "id": str(uuid.uuid4()),
+                "organization_id": organization_id,
+                "user_id": user_id,
+                "question": question,
+                "status": "queued",
+                "config": config or {},
+                "graph_state": {},
+            }
+        )
         response = client.table("research_runs").insert(row).select("*").execute()
         return first_row(response.data) or row
 
@@ -98,7 +101,7 @@ class ResearchRepository:
             return None
         response = (
             client.table("research_runs")
-            .update(fields)
+            .update(sanitize_for_postgres(fields))
             .eq("id", research_id)
             .eq("organization_id", organization_id)
             .select("*")

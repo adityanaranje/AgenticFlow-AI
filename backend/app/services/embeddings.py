@@ -25,6 +25,7 @@ from app.core.config import settings
 from app.core.exceptions import ConfigurationError
 from app.core.logging import get_logger
 from app.core.retry import call_with_retries, is_retryable_error
+from app.core.text import sanitize_text_for_postgres
 from app.llm.client import get_openai_client
 
 logger = get_logger(__name__)
@@ -58,7 +59,8 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     """Embed a list of texts (batched by the API) and return them in order."""
     if not texts:
         return []
-    cleaned = [text[:8000] for text in texts]
+    # NUL-stripped: provider payloads and downstream Postgres writes reject NULs.
+    cleaned = [sanitize_text_for_postgres(text)[:8000] for text in texts]
     client = _client()
     response = client.embeddings.create(
         model=settings.openai_embedding_model,

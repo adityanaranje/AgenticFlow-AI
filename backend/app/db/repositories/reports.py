@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from app.core.text import sanitize_for_postgres
 from app.db.repositories import first_row
 from app.db.supabase import get_supabase
 from app.core.logging import get_logger
@@ -28,17 +29,19 @@ class ReportRepository:
         client = get_supabase()
         if client is None:
             return None
-        row = {
-            "id": str(uuid.uuid4()),
-            "research_run_id": research_run_id,
-            "organization_id": organization_id,
-            "title": title,
-            "content": content,
-            "summary": summary,
-            "confidence": confidence,
-            "sections": sections or {},
-            "status": "ready",
-        }
+        row = sanitize_for_postgres(
+            {
+                "id": str(uuid.uuid4()),
+                "research_run_id": research_run_id,
+                "organization_id": organization_id,
+                "title": title,
+                "content": content,
+                "summary": summary,
+                "confidence": confidence,
+                "sections": sections or {},
+                "status": "ready",
+            }
+        )
         response = client.table("reports").insert(row).select("*").execute()
         return first_row(response.data) or row
 
@@ -90,7 +93,7 @@ class ReportRepository:
         client = get_supabase()
         if client is None:
             return None
-        row = dict(data)
+        row = sanitize_for_postgres(dict(data))
         row.setdefault("id", str(uuid.uuid4()))
         try:
             resp = client.table("report_sources").insert(row).select("*").execute()
@@ -133,7 +136,7 @@ class ReportRepository:
 
         payload = []
         for row in rows:
-            item = dict(row)
+            item = sanitize_for_postgres(dict(row))
             item.setdefault("id", str(uuid.uuid4()))
             payload.append(item)
 
@@ -193,11 +196,13 @@ class EvaluationRepository:
         resp = (
             client.table("evaluation_runs")
             .update(
-                {
-                    "status": "completed",
-                    "summary": summary,
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
-                }
+                sanitize_for_postgres(
+                    {
+                        "status": "completed",
+                        "summary": summary,
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
             )
             .eq("id", run_id)
             .select("*")
@@ -212,15 +217,17 @@ class EvaluationRepository:
         client = get_supabase()
         if client is None:
             return None
-        row = {
-            "evaluation_run_id": run_id,
-            "test_case": test_case,
-            "metric": metric,
-            "score": score,
-            "expected": expected,
-            "actual": actual,
-            "metadata": metadata or {},
-        }
+        row = sanitize_for_postgres(
+            {
+                "evaluation_run_id": run_id,
+                "test_case": test_case,
+                "metric": metric,
+                "score": score,
+                "expected": expected,
+                "actual": actual,
+                "metadata": metadata or {},
+            }
+        )
         resp = client.table("evaluation_results").insert(row).select("*").execute()
         return first_row(resp.data) or row
 

@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.core.text import sanitize_for_postgres
 from app.db.repositories import first_row
 from app.db.supabase import get_supabase
 
@@ -17,7 +18,7 @@ class DocumentRepository:
 
         response = (
             client.table("documents")
-            .insert(data)
+            .insert(sanitize_for_postgres(data))
             .select("*")
             .execute()
         )
@@ -108,7 +109,7 @@ class DocumentRepository:
 
         response = (
             client.table("documents")
-            .update(payload)
+            .update(sanitize_for_postgres(payload))
             .eq("id", document_id)
             .eq("organization_id", organization_id)
             .select("*")
@@ -128,7 +129,7 @@ class DocumentRepository:
 
         response = (
             client.table("document_chunks")
-            .insert(data)
+            .insert(sanitize_for_postgres(data))
             .select("*")
             .execute()
         )
@@ -145,6 +146,10 @@ class DocumentRepository:
         costs one HTTP round trip per chunk (a 400-chunk document spent
         minutes waiting on sequential inserts). Bulk inserts keep the same
         rows but pay the round trip once per batch.
+
+        Rows are NUL-stripped first: PostgreSQL rejects NUL bytes in
+        text/jsonb with 22P05 (extracted document text can contain NULs
+        from PDF ToUnicode maps / UTF-16 decodes).
         """
         if not rows:
             return []
@@ -156,7 +161,7 @@ class DocumentRepository:
 
         response = (
             client.table("document_chunks")
-            .insert(rows)
+            .insert([sanitize_for_postgres(row) for row in rows])
             .select("id")
             .execute()
         )
@@ -243,7 +248,7 @@ class DocumentRepository:
 
         response = (
             client.table("documents")
-            .update(fields)
+            .update(sanitize_for_postgres(fields))
             .eq("id", document_id)
             .eq("organization_id", organization_id)
             .select("*")

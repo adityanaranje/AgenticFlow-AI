@@ -41,6 +41,7 @@ from typing import Any
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.observability import ingestion_span
+from app.core.text import sanitize_for_postgres, sanitize_text_for_postgres
 from app.db.repositories.documents import DocumentRepository
 from app.services import (
     chunking,
@@ -86,15 +87,19 @@ def _chunk_row(
     chunk_id: str,
     chunk: chunking.TextChunk,
 ) -> dict[str, Any]:
-    """DB row for one chunk (id == Qdrant point id == vector_point_id)."""
+    """DB row for one chunk (id == Qdrant point id == vector_point_id).
+
+    Content/metadata are stripped of NUL characters: PostgreSQL rejects
+    NULs in text/jsonb with 22P05 (chunk inserts failed on them).
+    """
     return {
         "id": chunk_id,
         "document_id": document_id,
         "organization_id": organization_id,
         "chunk_index": chunk.chunk_index,
-        "content": chunk.content,
+        "content": sanitize_text_for_postgres(chunk.content),
         "page_number": chunk.page_number,
-        "metadata": chunk.metadata,
+        "metadata": sanitize_for_postgres(chunk.metadata),
         "vector_point_id": chunk_id,
     }
 
@@ -109,7 +114,12 @@ def _chunk_point(
     filename: str,
     file_type: str,
 ) -> dict[str, Any]:
-    """Qdrant point for one chunk (tenant + document + chunk linkage)."""
+    """Qdrant point for one chunk (tenant + document + chunk linkage).
+
+    String payload fields are NUL-stripped so the vector payload stays
+    byte-identical to the Postgres chunk row (and retrievable text can be
+    re-persisted downstream without tripping 22P05).
+    """
     return {
         "id": chunk_id,
         "vector": vector,
@@ -117,14 +127,14 @@ def _chunk_point(
             "organization_id": organization_id,
             "document_id": document_id,
             "document_chunk_id": chunk_id,
-            "filename": filename,
+            "filename": sanitize_text_for_postgres(filename),
             "chunk_index": chunk.chunk_index,
             "page_number": chunk.page_number,
-            "file_type": file_type,
-            "content": chunk.content,
+            "file_type": sanitize_text_for_postgres(file_type),
+            "content": sanitize_text_for_postgres(chunk.content),
             "char_count": chunk.char_count,
             "token_estimate": chunk.token_estimate,
-            "metadata": chunk.metadata,
+            "metadata": sanitize_for_postgres(chunk.metadata),
         },
     }
 
@@ -165,7 +175,7 @@ def process_document(document_id: str) -> dict:
         raise ValueError(f"Document {document_id} does not exist.")
 
     organization_id = doc["organization_id"]
-    filename = doc["filename"] or "document"
+    filename = sanitize_text_for_postgres(doc["filename"] or "document")
     file_type = doc["file_type"]
     started = time.perf_counter()
 
@@ -213,6 +223,13 @@ def process_document(document_id: str) -> dict:
             )
             if not chunks:
                 raise ValueError("Document produced no usable chunks.")
+            # Defense in depth: chunk text must never carry NULs into the
+            # embedding provider, Postgres (22P05) or Qdrant. Chunking
+            # already strips them; this covers parsers that bypass it so
+            # the embedded text and the stored text stay identical.
+            for chunk in chunks:
+                chunk.content = sanitize_text_for_postgres(chunk.content)
+                chunk.metadata = sanitize_for_postgres(chunk.metadata)
 
         # 6. embeddings — one request per batch, several batches in flight.
         contents = [chunk.content for chunk in chunks]

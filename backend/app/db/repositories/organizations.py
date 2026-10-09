@@ -11,6 +11,7 @@ get clean error messages instead of raw Postgres exceptions.
 
 from typing import Any
 
+from app.core.text import sanitize_for_postgres, sanitize_text_for_postgres
 from app.db.repositories import first_row
 from app.db.supabase import get_supabase
 
@@ -60,8 +61,8 @@ class OrganizationRepository:
         response = client.rpc(
             "create_organization",
             {
-                "organization_name": name,
-                "organization_slug": slug,
+                "organization_name": sanitize_text_for_postgres(name),
+                "organization_slug": sanitize_text_for_postgres(slug),
             },
         ).execute()
 
@@ -282,12 +283,14 @@ class OrganizationRepository:
         response = (
             client.table("organization_invitations")
             .insert(
-                {
-                    "organization_id": organization_id,
-                    "email": email.strip().lower(),
-                    "role": role,
-                    "invited_by": invited_by,
-                }
+                sanitize_for_postgres(
+                    {
+                        "organization_id": organization_id,
+                        "email": email.strip().lower(),
+                        "role": role,
+                        "invited_by": invited_by,
+                    }
+                )
             )
             .execute()
         )

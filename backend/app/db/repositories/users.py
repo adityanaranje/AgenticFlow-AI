@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.core.text import sanitize_for_postgres
 from app.db.repositories import first_row
 from app.db.supabase import get_supabase
 
@@ -30,7 +31,7 @@ class UserRepository:
 
         response = (
             client.table("profiles")
-            .update(data)
+            .update(sanitize_for_postgres(data))
             .eq("id", user_id)
             .select("*")
             .execute()

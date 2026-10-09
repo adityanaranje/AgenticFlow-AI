@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from app.core.exceptions import ValidationError
+from app.core.text import sanitize_text_for_postgres
 
 # Canonical (extension -> parser) mapping.
 SUPPORTED_EXTENSIONS = {"pdf", "txt", "md", "markdown", "docx"}
@@ -86,10 +87,14 @@ class ParsedDocument:
 
 
 def normalize_text(raw: str) -> str:
-    """Normalize extracted text: NFC, consistent newlines, tidy whitespace."""
+    """Normalize extracted text: NFC, consistent newlines, tidy whitespace.
+
+    NUL characters — emitted by some PDF ToUnicode maps and UTF-16
+    decodes — are stripped: PostgreSQL cannot store them (22P05).
+    """
     if raw is None:
         return ""
-    text = unicodedata.normalize("NFC", raw)
+    text = sanitize_text_for_postgres(unicodedata.normalize("NFC", raw))
     # Unify CRLF / CR to LF.
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     # Single pass over the lines: rstrip each one and collapse runs of blank
@@ -173,7 +178,7 @@ def parse_docx(data: bytes) -> ParsedDocument:
             continue
         style_name = (paragraph.style.name or "").lower() if paragraph.style else ""
         if any(token in style_name for token in ("heading", "title")):
-            current_section = text
+            current_section = sanitize_text_for_postgres(text)
         parts.append(text)
 
     body = normalize_text("\n".join(parts))

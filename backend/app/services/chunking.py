@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.config import settings
+from app.core.text import sanitize_for_postgres, sanitize_text_for_postgres
 from app.services.document_parser import ParsedPage
 
 # Approximate English token density (chars -> tokens). Good enough for
@@ -57,12 +58,17 @@ class TextChunk:
 
 
 def _split_paragraphs(page: ParsedPage) -> list[tuple[int | None, str]]:
-    """Split a page into (page_number, paragraph) non-empty segments."""
+    """Split a page into (page_number, paragraph) non-empty segments.
+
+    Paragraphs are stripped of NUL characters: callers may pass raw text
+    that bypassed the parser normalizer, and PostgreSQL cannot store NULs
+    (22P05).
+    """
     segments: list[tuple[int | None, str]] = []
     page_number = page.page_number
     append = segments.append
     for raw in _PARAGRAPH_SPLIT.split(page.text):
-        paragraph = raw.strip()
+        paragraph = sanitize_text_for_postgres(raw).strip()
         if paragraph:
             append((page_number, paragraph))
     return segments
@@ -98,7 +104,7 @@ def chunk_pages(
         return []
 
     n = len(segments)
-    base_metadata = dict(extra_metadata or {})
+    base_metadata = sanitize_for_postgres(dict(extra_metadata or {}))
 
     # Prefix sums of (paragraph length + separator). ``prefix[i]`` is the
     # length of paragraphs 0..i-1 joined by "\n\n" *including* the trailing
