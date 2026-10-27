@@ -3,7 +3,7 @@
 import { useState, type ChangeEvent, type SubmitEvent } from "react";
 import { CheckCircle2, CircleAlert, Loader2, UploadCloud } from "lucide-react";
 
-import { API_BASE_URL } from "@/lib/env";
+import { API_BASE_URL, API_URL } from "@/lib/env";
 
 const ACCEPTED_EXTENSIONS = ".pdf,.txt,.md,.markdown,.docx";
 
@@ -124,7 +124,16 @@ export default function UploadDocumentForm({
       onUploaded?.();
     } catch (err) {
       console.error("Upload error:", err);
-      setError("A network error occurred during upload.");
+      // `fetch` rejects with a TypeError both for a dropped connection and for
+      // a request the browser blocked (CORS). The upload is the first
+      // preflighted request in the app, so a backend CORS allowlist that does
+      // not contain this page's origin surfaces here — name the two settings
+      // that fix it instead of a bare "network error".
+      setError(
+        err instanceof TypeError
+          ? `Could not reach the API at ${API_URL}. Check that the backend is running and that this origin (${window.location.origin}) is listed in its FRONTEND_URL. A rejected CORS preflight shows up in the backend log as "OPTIONS … 400 Bad Request (Disallowed CORS origin)".`
+          : "A network error occurred during upload.",
+      );
     } finally {
       setUploading(false);
     }

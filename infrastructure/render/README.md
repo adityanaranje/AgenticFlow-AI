@@ -132,8 +132,11 @@ variable alone does nothing.
 
 1. **Backend CORS:** Render → `agentflow-api` → **Environment** → set
    `FRONTEND_URL` to the exact Vercel origin (scheme + host, no trailing
-   slash) → **Save** (Render redeploys automatically). `main.py` builds
-   `allow_origins` from this single value.
+   slash) → **Save** (Render redeploys automatically). Several origins are
+   allowed, comma-separated; `FRONTEND_ORIGIN_REGEX` covers rotating preview
+   domains and `FRONTEND_URL=https://*.vercel.app` covers all of them at once.
+   `app/core/cors.py` normalises and validates each entry and logs the result
+   as `CORS allowlist: …` at startup.
 2. **Supabase Auth URLs:** Supabase → Authentication → **URL Configuration**:
    - Site URL: `https://<your-vercel-domain>`
    - Redirect URLs: `https://<your-vercel-domain>/**`
@@ -144,7 +147,8 @@ variable alone does nothing.
    where").
 4. Re-run the sign-in flow once end-to-end. If the browser shows a CORS
    error, `FRONTEND_URL` is the culprit (http vs https, trailing slash, or a
-   Vercel *preview* domain — only one origin is allowed per backend).
+   Vercel *preview* domain — add it to `FRONTEND_URL` too, or use a
+   wildcard / `FRONTEND_ORIGIN_REGEX`).
 
 ---
 
@@ -223,7 +227,8 @@ move the workers to a paid instance and restore the compose values.
 | Vercel build fails at `onBuildComplete`: `ENOENT … next-server.js.nft.json` | Next 16.3 + Turbopack doesn't emit that file, but Vercel's tracing expects it when `output: "standalone"` is set | Already fixed: `next.config.ts` now sets standalone only when `VERCEL` is unset (Docker keeps it) — redeploy |
 | Render deploy fails with a port error | Server bound to the wrong port | The start script binds `${PORT:-8000}`; keep `dockerCommand` as shipped |
 | `Killed` / exit 137 in logs | OOM on the 512 MB instance | Lower `EMBEDDING_BATCH_SIZE`/concurrency (Part 5) |
-| Browser: CORS error | `FRONTEND_URL` ≠ exact Vercel origin | Fix scheme/host/trailing slash; preview deploys need the same origin |
+| Browser: CORS error | `FRONTEND_URL` ≠ exact Vercel origin | Fix scheme/host/trailing slash; add preview origins (comma-separated, wildcard, or `FRONTEND_ORIGIN_REGEX`) |
+| `OPTIONS …` → `400 Bad Request` in the Render log | Preflight rejected: the origin is not allowlisted | Read the startup line `CORS allowlist: origins=[…]` and add the browser origin to `FRONTEND_URL` |
 | Browser: "Missing NEXT_PUBLIC_SUPABASE_URL" | Env var missing at **build** time | Set it on Vercel, then **redeploy** (not just save) |
 | Documents stuck at `pending` | Service asleep or a worker died | Confirm keep-alive; check logs for `[start-services]` lines |
 | First request after idle takes ~1 min | Free-tier cold start | Keep-alive (Part 4) or a paid instance |

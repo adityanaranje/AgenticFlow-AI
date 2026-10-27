@@ -190,7 +190,9 @@ npm install
 | --------------------------------- | ---------- | :------: | ----------------------------------------- |
 | `ENVIRONMENT`                     | backend    |          | `development` (default) / `production`    |
 | `API_HOST` / `API_PORT`           | backend    |          | Bind host / port (default `0.0.0.0:8000`) |
-| `FRONTEND_URL`                    | backend    |          | CORS origin (default `http://localhost:3000`) |
+| `FRONTEND_URL`                    | backend    |          | Browser origin(s) allowed by CORS, comma-separated (default `http://localhost:3000`). Scheme + host + port only — no trailing slash, no path |
+| `FRONTEND_ORIGIN_REGEX`           | backend    |          | Optional regex for origins that cannot be listed (rotating previews); added to `FRONTEND_URL` |
+| `CORS_ALLOW_PRIVATE_NETWORK`      | backend    |          | Answer Chrome's private-network preflight; unset = on in development, off in production |
 | `OPENAI_API_KEY`                  | backend    |    🔒    | Backend-only                              |
 | `OPENAI_MODEL`                    | backend    |          | Default `gpt-4o-mini`                     |
 | `OPENAI_EMBEDDING_MODEL`          | backend    |          | Default `text-embedding-3-small`          |
@@ -938,6 +940,7 @@ Those routes are separate from FastAPI's `/api/v1` surface.
 | Missing tables, relationships, or invitation behavior | Apply every migration through `018`, not just the initial schema |
 | Missing traces or old prompts | Langfuse credentials/host, prompt labels, prompt cache TTL; core prompt fallbacks can hide tracing outages |
 | Frontend builds but browser cannot call API | Build-time `NEXT_PUBLIC_API_URL`, reachable backend origin, CORS `FRONTEND_URL` |
+| `OPTIONS …/documents/upload` → `400 Bad Request` (`Disallowed CORS origin`) | The browser origin is not in the backend allowlist: set `FRONTEND_URL` to the exact origin from the address bar (e.g. `http://127.0.0.1:3000`, a preview URL) with no trailing slash/path, comma-separate several, or use `FRONTEND_ORIGIN_REGEX`. The backend logs the allowlist at startup (`CORS allowlist: …`). |
 
 Further operational notes: [scripts](scripts/README.md),
 [Docker](infrastructure/docker/README.md), [Redis](infrastructure/redis/README.md),

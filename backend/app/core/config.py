@@ -35,7 +35,19 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, alias="API_PORT")
     api_v1_prefix: str = Field(default="/api/v1", alias="API_V1_PREFIX")
 
+    # Browser origin(s) allowed to call this API. A comma-separated list is
+    # accepted (e.g. the Vercel prod origin plus a preview origin); each entry
+    # is normalised and validated by app.core.cors. In development the
+    # loopback aliases of a localhost entry are added automatically.
     frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
+    # Escape hatch for origins that cannot be enumerated (rotating preview
+    # domains, e.g. r"^https://.*\.vercel\.app$"). Added to FRONTEND_URL.
+    frontend_origin_regex: str = Field(default="", alias="FRONTEND_ORIGIN_REGEX")
+    # Chrome Private Network Access preflight (public page -> localhost / LAN
+    # backend). Unset means "on in development, off in production".
+    cors_allow_private_network: bool | None = Field(
+        default=None, alias="CORS_ALLOW_PRIVATE_NETWORK"
+    )
 
     # OpenAI
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
