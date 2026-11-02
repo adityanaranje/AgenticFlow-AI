@@ -1,0 +1,70 @@
+name: Ping deployed services
+
+on:
+  schedule:
+    # Cron cannot express an exact three-day interval across month boundaries.
+    # Run daily and use the UTC epoch day below to select every third day.
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping frontend and API
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -u
+          epoch_day=$(( $(date -u +%s) / 86400 ))
+          if [ "$EVENT_NAME" = schedule ] && [ $((epoch_day % 3)) -ne 0 ]; then
+            echo 'Not a ping day; skipping.'
+            exit 0
+          fi
+
+          failed=0
+          for url in 'https://agentflow-ai.adityanaranje.com/' 'https://agentflow-api-qp3k.onrender.com/'; do
+            echo "Pinging $url"
+            if ! curl --fail --silent --show-error --location --max-time 120 --output /dev/null "$url"; then
+              echo "::error::Ping failed for $url"
+              failed=1
+            fi
+          done
+          # The API health endpoint probes Qdrant, Langfuse, Redis and Supabase
+          # using its existing server-side credentials; none are needed in Actions.
+          # It may return HTTP 200 even when individual dependencies are down.
+          health_file=$(mktemp)
+          trap 'rm -f "$health_file"' EXIT
+          if curl --fail --silent --show-error --max-time 120 \
+              --output "$health_file" 'https://agentflow-api-qp3k.onrender.com/health'; then
+            if ! python3 - "$health_file" <<'PY'
+          import json
+          import sys
+
+          try:
+              with open(sys.argv[1], encoding="utf-8") as f:
+                  health = json.load(f)
+              failed = False
+              for service in ("qdrant", "langfuse", "redis", "supabase"):
+                  status = health.get(service, {}).get("status", "missing")
+                  print(f"{service}: {status}")
+                  if status != "up":
+                      failed = True
+              sys.exit(1 if failed else 0)
+          except (OSError, ValueError, AttributeError) as exc:
+              print(f"Unable to parse health response: {type(exc).__name__}")
+              sys.exit(1)
+          PY
+            then
+              echo '::error::One or more dependency health checks failed.'
+              failed=1
+            fi
+          else
+            echo '::error::API dependency health request failed.'
+            failed=1
+          fi
+          exit "$failed"
